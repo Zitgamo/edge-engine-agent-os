@@ -1,0 +1,21 @@
+# Data
+data/raw/
+data/processed/
+data/engine.db
+
+# Models
+models/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+
+# Environment
+.env

@@ -1,0 +1,31 @@
+name: Daily Pipeline
+
+on:
+  schedule:
+    - cron: "0 2 * * 1-5"
+  workflow_dispatch:
+
+jobs:
+  run-pipeline:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+      - name: Run full pipeline
+        run: python -m src.cli pipeline
+      - name: Backfill actuals (if any)
+        run: python -m src.cli backfill
+      - name: Run tests
+        run: pytest
+      - uses: actions/upload-artifact@v4
+        with:
+          name: database
+          path: data/engine.db
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ranking
+          path: data/processed/ranking.parquet
