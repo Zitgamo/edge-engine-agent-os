@@ -39,8 +39,8 @@ class OHLCVCollector:
         t = yf.Ticker(yf_ticker)
         hist = t.history(period=f"{days}d")
         if hist.empty:
-            log.warning("No data for %s, falling back to mock", yf_ticker)
-            return self._mock_data(ticker, days)
+            log.warning("No data for %s, returning empty (delisted)", yf_ticker)
+            return pd.DataFrame()
         df = hist.reset_index()
         df = df.rename(columns={
             "Date": "date",
