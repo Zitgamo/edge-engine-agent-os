@@ -1,6 +1,8 @@
 name: Daily Pipeline
 
 on:
+  push:
+    branches: [master]
   schedule:
     - cron: "0 2 * * 1-5"
   workflow_dispatch:
