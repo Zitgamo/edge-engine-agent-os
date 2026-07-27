@@ -164,9 +164,17 @@ def run_pipeline(config: Config | None = None) -> None:
     df_all["ensemble_score"] = df_all[score_cols].mean(axis=1)
     df_all["score"] = df_all["ensemble_score"]
 
-    log.info("=== Ranking & Signal ===")
-    ranker = Ranker()
-    ranking = ranker.generate_top20(df_all)
+    log.info("=== Running all strategies ===")
+    from src.strategies import StrategyManager
+    sm = StrategyManager()
+    rankings = sm.run_all(df_all)
+    sm.save_signals(rankings, n=N_PICKS)
+    sm.backfill_strategy_actuals()
+
+    best_strat = sm.get_best_strategy()
+    log.info("Best strategy today: '%s'", best_strat)
+
+    ranking = rankings.get(best_strat, rankings.get("outperform", pd.DataFrame()))
     storage.save_processed(ranking, "ranking.parquet")
 
     signal = SignalGenerator().pick_top_n(
@@ -176,7 +184,7 @@ def run_pipeline(config: Config | None = None) -> None:
     )
     storage.save_processed(signal, "signal.parquet")
     save_signals(signal)
-    log.info("Top %d: %s", N_PICKS, list(signal["ticker"]))
+    log.info("Top %d (%s): %s", N_PICKS, best_strat, list(signal["ticker"]))
 
     save_pipeline_run(all_metrics.get("T+5", {}))
     log.info("=== Backfilling actuals ===")

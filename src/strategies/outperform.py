@@ -1,0 +1,30 @@
+from __future__ import annotations
+
+import logging
+
+import pandas as pd
+import xgboost as xgb
+
+from src.config import Config
+from src.model.trainer import FEATURE_COLS
+from src.strategies.base import Strategy
+
+log = logging.getLogger(__name__)
+
+
+class OutperformStrategy(Strategy):
+    name = "outperform"
+    description = "XGBoost ensemble predict T+5 outperform vs VNINDEX"
+    requires_ml = True
+
+    def rank(self, df: pd.DataFrame) -> pd.DataFrame:
+        result = df.copy()
+        if "score" not in result.columns:
+            result["score"] = result["ensemble_score"] if "ensemble_score" in result.columns else 0.5
+        if "ensemble_score" not in result.columns:
+            result["ensemble_score"] = result["score"]
+
+        latest = result[result["date"] == result["date"].max()].copy()
+        latest = latest.sort_values("score", ascending=False)
+        latest["rank"] = range(1, len(latest) + 1)
+        return latest[["ticker", "date", "score", "ensemble_score", "rank"]]

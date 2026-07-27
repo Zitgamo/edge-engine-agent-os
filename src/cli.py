@@ -31,6 +31,14 @@ def main() -> None:
         count = backfill_actuals()
         log.info("Backfilled %d actuals", count)
 
+    elif cmd == "strategies":
+        from src.strategies import StrategyManager
+        sm = StrategyManager()
+        sm.backfill_strategy_actuals()
+        sm.show_comparison()
+        best = sm.get_best_strategy()
+        print(f"Recommended strategy: {best}")
+
     elif cmd == "summary":
         from src.database import get_conn
         conn = get_conn()
