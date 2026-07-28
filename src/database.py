@@ -163,7 +163,7 @@ def update_actuals(df: pd.DataFrame) -> int:
     return count
 
 
-def backfill_actuals() -> int:
+def backfill_actuals(holding_period: int = 20) -> int:
     from src.config import Config
     from src.data.collector import OHLCVCollector
 
@@ -194,12 +194,12 @@ def backfill_actuals() -> int:
             if sd not in dates:
                 continue
             idx = dates.index(sd)
-            if idx + 5 >= len(dates):
+            if idx + holding_period >= len(dates):
                 continue
             close_now = df_sorted.iloc[idx]["close"]
-            close_future = df_sorted.iloc[idx + 5]["close"]
+            close_future = df_sorted.iloc[idx + holding_period]["close"]
             bm_now = bm_dict.get(sd)
-            bm_future = bm_dict.get(dates[idx + 5])
+            bm_future = bm_dict.get(dates[idx + holding_period])
             if bm_now is None or bm_future is None:
                 continue
             stock_ret = (close_future - close_now) / close_now
@@ -210,7 +210,7 @@ def backfill_actuals() -> int:
                 "ticker": tk,
                 "actual_excess_return_5d": excess,
                 "actual_outperform": 1 if excess > 0 else 0,
-                "realized_date": dates[idx + 5],
+                "realized_date": dates[idx + holding_period],
             })
         except Exception as e:
             log.warning("Backfill error for %s %s: %s", sd, tk, e)

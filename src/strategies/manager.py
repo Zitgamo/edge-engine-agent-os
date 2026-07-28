@@ -27,8 +27,9 @@ STRATEGIES: list[Strategy] = [
 
 
 class StrategyManager:
-    def __init__(self) -> None:
+    def __init__(self, holding_period: int = 20) -> None:
         self.strategies = STRATEGIES
+        self.holding_period = holding_period
         self._init_db()
 
     def _init_db(self) -> None:
@@ -131,6 +132,8 @@ class StrategyManager:
         df = pd.read_parquet("data/processed/features.parquet")
         df["date_str"] = pd.to_datetime(df["date"]).dt.strftime("%Y-%m-%d")
 
+        er_col = f"excess_return_{self.holding_period}d"
+
         updated = 0
         for _, row in pending.iterrows():
             sd = row["signal_date"]
@@ -138,8 +141,8 @@ class StrategyManager:
             match = df[(df["date_str"] == sd) & (df["ticker"] == tk)]
             if match.empty:
                 continue
-            er = match["excess_return_5d"].values[0]
-            if pd.isna(er):
+            er = match[er_col].values[0] if er_col in match.columns else None
+            if er is None or pd.isna(er):
                 continue
             conn = get_conn()
             conn.execute(
@@ -152,7 +155,7 @@ class StrategyManager:
             conn.close()
             updated += 1
 
-        log.info("Backfilled %d strategy actuals", updated)
+        log.info("Backfilled %d strategy actuals (T+%d)", updated, self.holding_period)
         return updated
 
     def show_comparison(self) -> None:

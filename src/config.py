@@ -16,6 +16,16 @@ class Config:
     processed_data_dir: Path = Path("data/processed")
     ssi_api_key: str | None = os.getenv("SSI_API_KEY")
 
+    telegram_bot_token: str | None = os.getenv("TELEGRAM_BOT_TOKEN")
+    telegram_chat_id: str | None = os.getenv("TELEGRAM_CHAT_ID")
+
+    supabase_url: str | None = os.getenv("SUPABASE_URL")
+    supabase_anon_key: str | None = os.getenv("SUPABASE_ANON_KEY")
+    supabase_service_key: str | None = os.getenv("SUPABASE_SERVICE_KEY")
+
+    stop_loss: float = float(os.getenv("STOP_LOSS", "-0.03"))
+    take_profit: float = float(os.getenv("TAKE_PROFIT", "0.08"))
+
     @classmethod
     def ensure_dirs(cls) -> None:
         cls.raw_data_dir.mkdir(parents=True, exist_ok=True)

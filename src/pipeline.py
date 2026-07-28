@@ -28,10 +28,10 @@ log = logging.getLogger(__name__)
 
 ENSEMBLE_HORIZONS = [1, 5, 10, 20]
 TRAIN_SPLIT = 0.8
-N_PICKS = 5
-HOLDING_PERIOD = 5
-STOP_LOSS = -0.01
-TAKE_PROFIT = 0.02
+N_PICKS = 3
+HOLDING_PERIOD = 20
+STOP_LOSS = -0.03
+TAKE_PROFIT = 0.08
 
 
 def run_pipeline(config: Config | None = None) -> None:
@@ -166,7 +166,7 @@ def run_pipeline(config: Config | None = None) -> None:
 
     log.info("=== Running all strategies ===")
     from src.strategies import StrategyManager
-    sm = StrategyManager()
+    sm = StrategyManager(holding_period=HOLDING_PERIOD)
     rankings = sm.run_all(df_all)
     sm.save_signals(rankings, n=N_PICKS)
     sm.backfill_strategy_actuals()
@@ -186,11 +186,31 @@ def run_pipeline(config: Config | None = None) -> None:
     save_signals(signal)
     log.info("Top %d (%s): %s", N_PICKS, best_strat, list(signal["ticker"]))
 
+    log.info("=== Ceiling context analysis (top picks) ===")
+    from src.filters.ceiling_context import report_ceiling_context
+    pick_tickers = list(signal["ticker"])
+    ctx_report = report_ceiling_context(pick_tickers)
+    for ctx in ctx_report:
+        log.info("  [%s] ctx=%s drawdown=%.1f%% floors=%d ceil=%d adj=%+.3f",
+                 ctx["ticker"], ctx["context_label"],
+                 ctx["drawdown_60d"] * 100,
+                 ctx["consecutive_floors"], ctx["consecutive_ceilings"],
+                 ctx["score_adjustment"])
+
+    log.info("=== Telegram notification ===")
+    from src.notification.telegram import send_signal
+    send_signal(signal, best_strat)
+
     save_pipeline_run(all_metrics.get("T+5", {}))
-    log.info("=== Backfilling actuals ===")
+    log.info("=== Backfilling actuals (T+%d) ===", HOLDING_PERIOD)
     from src.database import backfill_actuals
-    bf_count = backfill_actuals()
+    bf_count = backfill_actuals(holding_period=HOLDING_PERIOD)
     log.info("Backfilled %d actuals", bf_count)
+
+    log.info("=== Syncing to cloud (Supabase) ===")
+    from src.supabase_client import sync_all
+    sync_all()
+
     log.info("=== Pipeline complete ===")
 
 
