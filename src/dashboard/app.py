@@ -138,6 +138,71 @@ else:
     st.info("No actuals data yet. Pipeline needs ~20 days to accumulate results.")
 
 
+# === REALTIME P&L TRACKING ===
+st.markdown('<div class="section-title">REALTIME P&L TRACKING</div>', unsafe_allow_html=True)
+
+try:
+    from src.tracking.realtime import track_signal, get_signal_summary
+
+    past_signals = sigs.copy() if not sigs.empty else pd.DataFrame()
+    if not past_signals.empty:
+        past_signals = past_signals[past_signals["signal_date"] != str(date.today())]
+        tracking_results = []
+        for _, r in past_signals.head(15).iterrows():
+            result = track_signal(
+                r["ticker"],
+                str(r["signal_date"])[:10],
+                stop_loss=float(r.get("stop_loss", -0.03)),
+                take_profit=float(r.get("take_profit", 0.08)),
+            )
+            tracking_results.append(result)
+
+        if tracking_results:
+            summary = get_signal_summary(tracking_results)
+            kpi_html = '<div class="kpi-row">'
+            kpi_data = [
+                ("🟢", str(summary["hit_tp"]), "Hit TP", "kpi-green"),
+                ("🔴", str(summary["hit_sl"]), "Hit SL", "kpi-red"),
+                ("🟡", str(summary["active"]), "Active", "kpi-blue"),
+                ("📊", f"{summary['win_rate']:.0f}%", "Win Rate", "kpi-green" if summary['win_rate'] >= 50 else "kpi-red"),
+                ("💰", f"{summary['total_pnl']:+.2%}", "Total P&L", "kpi-green" if summary['total_pnl'] > 0 else "kpi-red"),
+            ]
+            for icon, val, label, cls in kpi_data:
+                kpi_html += f"""
+                <div class="kpi-card">
+                    <div style="font-size:1.3rem;margin-bottom:0.3rem">{icon}</div>
+                    <div class="kpi-value {cls}">{val}</div>
+                    <div class="kpi-label">{label}</div>
+                </div>"""
+            kpi_html += "</div>"
+            st.markdown(kpi_html, unsafe_allow_html=True)
+
+            # Detail table
+            rows_html = ""
+            for r in tracking_results:
+                pnl_cls = "kpi-green" if r["pnl"] > 0 else "kpi-red"
+                status_badge = {
+                    "ACTIVE": '<span class="badge badge-pending">ACTIVE</span>',
+                    "HIT_TP": '<span class="badge badge-win">HIT TP</span>',
+                    "HIT_SL": '<span class="badge badge-loss">HIT SL</span>',
+                    "EXPIRED": '<span class="badge badge-pending">EXPIRED</span>',
+                    "NO_DATA": "—",
+                }.get(r["status"], r["status"])
+                rows_html += f"""<tr>
+                    <td>{r['ticker']}</td>
+                    <td>{r['signal_date'][:10]}</td>
+                    <td>{status_badge}</td>
+                    <td class="{pnl_cls}">{r['pnl']:+.2%}</td>
+                    <td>{r['days_held']}d</td>
+                    <td>{r.get('entry_price', 0):,.0f}</td>
+                </tr>"""
+            if rows_html:
+                st.markdown(f"""<table class="dataframe" style="width:100%">
+                <thead><tr><th>Ticker</th><th>Date</th><th>Status</th><th>P&L</th><th>Held</th><th>Entry</th></tr></thead>
+                <tbody>{rows_html}</tbody></table>""", unsafe_allow_html=True)
+except Exception as e:
+    st.caption(f"P&L tracking unavailable: {e}")
+
 # === HISTORY TABLE ===
 st.markdown('<div class="section-title">RECENT SIGNALS</div>', unsafe_allow_html=True)
 

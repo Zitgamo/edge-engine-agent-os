@@ -126,6 +126,62 @@ daily = daily.rename(columns={
 })
 st.dataframe(daily, use_container_width=True, hide_index=True)
 
+# === REALTIME TRACKING ===
+st.markdown('<div class="section-title">REALTIME SIGNAL TRACKING</div>', unsafe_allow_html=True)
+
+try:
+    from src.tracking.realtime import track_signal, get_signal_summary
+
+    # Load signals from either source
+    use_cloud = os.getenv("SUPABASE_URL") and os.getenv("SUPABASE_ANON_KEY")
+    if use_cloud:
+        from src.supabase_client import get_client
+        client = get_client()
+        sigs_raw = client.get_signals(limit=100) if client else []
+        sigs = pd.DataFrame(sigs_raw) if sigs_raw else pd.DataFrame()
+    else:
+        from src.database import get_signals
+        sigs = get_signals(limit=100)
+
+    if not sigs.empty:
+        from datetime import date as dt_date
+        past = sigs[sigs["signal_date"] != str(dt_date.today())].head(30)
+        results = []
+        for _, r in past.iterrows():
+            result = track_signal(
+                r["ticker"], str(r["signal_date"])[:10],
+                stop_loss=float(r.get("stop_loss", -0.03)),
+                take_profit=float(r.get("take_profit", 0.08)),
+            )
+            results.append(result)
+
+        if results:
+            summary = get_signal_summary(results)
+            c1, c2, c3, c4, c5 = st.columns(5)
+            c1.metric("Hit TP", summary["hit_tp"])
+            c2.metric("Hit SL", summary["hit_sl"])
+            c3.metric("Active", summary["active"])
+            c4.metric("Win Rate", f"{summary['win_rate']:.0f}%")
+            c5.metric("Total P&L", f"{summary['total_pnl']:+.2%}")
+
+            # Table
+            rows = []
+            for r in results:
+                rows.append({
+                    "Ticker": r["ticker"],
+                    "Date": r["signal_date"][:10],
+                    "Status": r["status"],
+                    "P&L": r["pnl"],
+                    "Days": r["days_held"],
+                    "Entry": r.get("entry_price", 0),
+                })
+            df_rt = pd.DataFrame(rows)
+            df_rt["P&L"] = df_rt["P&L"].apply(lambda x: f"{x:+.2%}")
+            df_rt["Entry"] = df_rt["Entry"].apply(lambda x: f"{x:,.0f}")
+            st.dataframe(df_rt, use_container_width=True, hide_index=True)
+except Exception as e:
+    st.caption(f"Realtime tracking unavailable: {e}")
+
 st.markdown(
     '<div style="text-align:center;color:#333;font-size:0.7rem;margin-top:3rem;'
     'border-top:1px solid #1A1D29;padding:1rem">'
