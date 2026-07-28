@@ -257,11 +257,32 @@ class SupabaseClient:
         return []
 
     def get_signals(self, limit: int = 100) -> list[dict[str, Any]]:
-        return self._query("signals", {
+        signals = self._query("signals", {
             "select": "*",
             "order": "signal_date.desc,rank.asc",
             "limit": str(limit),
         })
+        actuals = self._query("actuals", {
+            "select": "*",
+            "order": "signal_date.desc",
+            "limit": str(limit),
+        })
+        actual_map: dict[tuple[str, str], dict[str, Any]] = {}
+        for a in actuals:
+            key = (str(a.get("signal_date", "")), str(a.get("ticker", "")))
+            actual_map[key] = a
+        for s in signals:
+            key = (str(s.get("signal_date", "")), str(s.get("ticker", "")))
+            if key in actual_map:
+                a = actual_map[key]
+                s["actual_excess_return_5d"] = a.get("actual_excess_return_5d")
+                s["actual_outperform"] = a.get("actual_outperform")
+                s["realized_date"] = a.get("realized_date")
+            else:
+                s["actual_excess_return_5d"] = None
+                s["actual_outperform"] = None
+                s["realized_date"] = None
+        return signals
 
     def get_actuals(self, limit: int = 100) -> list[dict[str, Any]]:
         return self._query("actuals", {

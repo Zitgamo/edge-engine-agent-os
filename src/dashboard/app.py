@@ -145,15 +145,21 @@ if not sigs.empty:
     display = sigs.sort_values(["signal_date", "rank"], ascending=[False, True]).head(30).copy()
     display["signal_date"] = pd.to_datetime(display["signal_date"]).dt.strftime("%d/%m/%Y")
     display["score"] = display["score"].apply(lambda x: f"{x:.2%}")
+    has_excess = "actual_excess_return_5d" in display.columns
+    has_outperform = "actual_outperform" in display.columns
     display["excess"] = display["actual_excess_return_5d"].apply(
         lambda x: f"{x:+.2%}" if pd.notna(x) else "—"
-    )
+    ) if has_excess else "—"
     display["result"] = display["actual_outperform"].apply(
         lambda x: '<span class="badge badge-win">WIN</span>' if x == 1
         else ('<span class="badge badge-loss">LOSS</span>' if x == 0
               else '<span class="badge badge-pending">PENDING</span>')
-    )
-    table = display[["signal_date", "ticker", "score", "excess", "result"]].rename(columns={
+    ) if has_outperform else '<span class="badge badge-pending">PENDING</span>'
+    cols = ["signal_date", "ticker", "score"]
+    if has_excess:
+        cols.append("excess")
+    cols.append("result")
+    table = display[cols].rename(columns={
         "signal_date": "Date", "ticker": "Ticker", "score": "Score",
         "excess": "Excess Return", "result": "Result",
     })
