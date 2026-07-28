@@ -1,3 +1,6 @@
+[tool.poetry]
+package-mode = false
+
 [project]
 name = "edge_engine_agent_os"
 version = "0.1.0"
