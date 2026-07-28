@@ -157,12 +157,13 @@ try:
 
         if results:
             summary = get_signal_summary(results)
-            c1, c2, c3, c4, c5 = st.columns(5)
-            c1.metric("Hit TP", summary["hit_tp"])
-            c2.metric("Hit SL", summary["hit_sl"])
-            c3.metric("Active", summary["active"])
-            c4.metric("Win Rate", f"{summary['win_rate']:.0f}%")
-            c5.metric("Total P&L", f"{summary['total_pnl']:+.2%}")
+            c1, c2, c3, c4, c5, c6 = st.columns(6)
+            c1.metric("T+2...", summary["settling"])
+            c2.metric("Hit TP", summary["hit_tp"])
+            c3.metric("Hit SL", summary["hit_sl"])
+            c4.metric("Active", summary["active"])
+            c5.metric("Win Rate", f"{summary['win_rate']:.0f}%")
+            c6.metric("Total P&L", f"{summary['total_pnl']:+.2%}")
 
             # Table
             rows = []

@@ -182,6 +182,7 @@ try:
             for r in tracking_results:
                 pnl_cls = "kpi-green" if r["pnl"] > 0 else "kpi-red"
                 status_badge = {
+                    "SETTLING": '<span class="badge badge-pending">T+2...</span>',
                     "ACTIVE": '<span class="badge badge-pending">ACTIVE</span>',
                     "HIT_TP": '<span class="badge badge-win">HIT TP</span>',
                     "HIT_SL": '<span class="badge badge-loss">HIT SL</span>',

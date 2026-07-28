@@ -57,8 +57,12 @@ def simulate_holding(
     stop_loss: float,
     take_profit: float,
     holding_period: int = 20,
+    settlement_delay: int = 2,
 ) -> dict[str, Any]:
-    """Simulate the holding period for a signal.
+    """Simulate the holding period for a signal (VN market rules).
+
+    VN market uses T+2 settlement: shares arrive 2 trading days after buy.
+    SL/TP only executable from settlement_delay onwards.
 
     Returns:
     - status: 'ACTIVE' | 'HIT_SL' | 'HIT_TP' | 'EXPIRED' | 'NO_DATA'
@@ -85,7 +89,7 @@ def simulate_holding(
     days_held = 0
     exit_price = None
     exit_date = None
-    status = "ACTIVE"
+    status = "SETTLING"
 
     max_high = entry_price
     min_low = entry_price
@@ -101,16 +105,24 @@ def simulate_holding(
         max_high = max(max_high, high)
         min_low = min(min_low, low)
 
+        # VN T+2: shares arrive after settlement_delay, can only sell from then
+        if days_held < settlement_delay:
+            exit_price = close
+            exit_date = current_date
+            continue
+
+        status = "ACTIVE"
+
         # Check TP first (price hit target)
         if high >= tp_price:
-            exit_price = min(close, high)
+            exit_price = close
             exit_date = current_date
             status = "HIT_TP"
             break
 
         # Check SL
         if low <= sl_price:
-            exit_price = max(close, low)
+            exit_price = close
             exit_date = current_date
             status = "HIT_SL"
             break
@@ -133,6 +145,7 @@ def simulate_holding(
         "days_held": days_held,
         "high_during_hold": round(max_high, 2),
         "low_during_hold": round(min_low, 2),
+        "settlement_delay": settlement_delay,
     }
 
 
@@ -143,10 +156,12 @@ def track_signal(
     stop_loss: float = -0.03,
     take_profit: float = 0.08,
     holding_period: int = 20,
+    settlement_delay: int = 2,
     data_dir: str | None = None,
 ) -> dict[str, Any]:
     """Track a single signal's realtime P&L.
 
+    VN T+2: settlement_delay=2 → only execute SL/TP from 3rd trading day.
     If entry_price is None, it's inferred from the close on signal_date.
     """
     df = load_stock_data(ticker, data_dir)
@@ -160,7 +175,7 @@ def track_signal(
         idx = dates_list.index(signal_date)
         entry_price = float(df.iloc[idx]["close"])
 
-    result = simulate_holding(df, signal_date, entry_price, stop_loss, take_profit, holding_period)
+    result = simulate_holding(df, signal_date, entry_price, stop_loss, take_profit, holding_period, settlement_delay)
     result["ticker"] = ticker
     result["signal_date"] = signal_date
     result["entry_price"] = round(entry_price, 2)
@@ -187,6 +202,7 @@ def track_signals(
 def get_signal_summary(results: list[dict[str, Any]]) -> dict[str, Any]:
     """Aggregate tracking results into a summary."""
     total = len(results)
+    settling = sum(1 for r in results if r["status"] == "SETTLING")
     hit_tp = sum(1 for r in results if r["status"] == "HIT_TP")
     hit_sl = sum(1 for r in results if r["status"] == "HIT_SL")
     active = sum(1 for r in results if r["status"] == "ACTIVE")
@@ -197,6 +213,7 @@ def get_signal_summary(results: list[dict[str, Any]]) -> dict[str, Any]:
 
     return {
         "total": total,
+        "settling": settling,
         "hit_tp": hit_tp,
         "hit_sl": hit_sl,
         "active": active,
