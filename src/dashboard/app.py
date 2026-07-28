@@ -4,93 +4,168 @@ import os
 import sys
 from pathlib import Path
 
-# Ensure project root is on path (works on Streamlit Cloud)
 _root = Path(__file__).resolve().parent.parent.parent
 if str(_root) not in sys.path:
     sys.path.insert(0, str(_root))
 
 import pandas as pd
 import streamlit as st
+from datetime import date, datetime
 
-st.set_page_config(page_title="Edge Engine Agent OS", layout="wide")
+from src.dashboard.style import CUSTOM_CSS
 
-st.title("Edge Engine Agent OS")
-st.subheader("VN Stock Ranking — T+20 Outperformance vs VNINDEX")
+st.set_page_config(
+    page_title="Edge Engine — Signals",
+    page_icon="📈",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
 
-
-def load_from_supabase():
-    from src.supabase_client import get_client
-    client = get_client()
-    if client is None:
-        return None, None, 0
-    sigs_raw = client.get_signals(limit=3)
-    perf_raw = client.get_performance_summary()
-    runs_raw = client.get_pipeline_summary()
-    sigs = pd.DataFrame(sigs_raw)
-    perf = pd.DataFrame(perf_raw)
-    run_count = len(runs_raw)
-    return sigs, perf, run_count
+st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
 
-def load_from_sqlite():
-    from src.database import get_conn, get_performance_summary, get_signals
-    sigs = get_signals(limit=3)
-    perf = get_performance_summary()
-    conn = get_conn()
-    run_count = conn.execute("SELECT COUNT(*) FROM pipeline_runs").fetchone()[0]
-    conn.close()
-    return sigs, perf, run_count
+def load_overview():
+    use_cloud = os.getenv("SUPABASE_URL") and os.getenv("SUPABASE_ANON_KEY")
+    try:
+        if use_cloud:
+            from src.supabase_client import get_client
+            client = get_client()
+            if not client:
+                return None, None, 0
+            sigs_raw = client.get_signals(limit=100)
+            perf_raw = client.get_performance_summary()
+            runs_raw = client.get_pipeline_summary()
+            sigs = pd.DataFrame(sigs_raw) if sigs_raw else pd.DataFrame()
+            perf = pd.DataFrame(perf_raw) if perf_raw else pd.DataFrame()
+            run_count = len(runs_raw) if runs_raw else 0
+        else:
+            from src.database import get_signals, get_performance_summary
+            sigs = get_signals(limit=100)
+            perf = get_performance_summary()
+            from src.database import get_conn
+            conn = get_conn()
+            run_count = conn.execute("SELECT COUNT(*) FROM pipeline_runs").fetchone()[0]
+            conn.close()
+        return sigs, perf, run_count
+    except Exception:
+        return pd.DataFrame(), pd.DataFrame(), 0
 
 
-use_cloud = os.getenv("SUPABASE_URL") and os.getenv("SUPABASE_ANON_KEY")
-data_source = "cloud" if use_cloud else "local"
+sigs, perf, run_count = load_overview()
 
-try:
-    if use_cloud:
-        sigs, perf, run_count = load_from_supabase()
-    else:
-        sigs, perf, run_count = load_from_sqlite()
 
-    if perf is not None and not perf.empty:
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Tổng tín hiệu", int(perf["total_picks"].sum()) if "total_picks" in perf else int(len(perf)))
-        col2.metric("Win Rate TB", f"{perf['win_rate'].mean():.1%}" if "win_rate" in perf else "N/A")
-        col3.metric("Avg Excess Return", f"{perf['avg_excess_return'].mean():+.3%}" if "avg_excess_return" in perf else "N/A")
-        col4.metric("Số ngày", len(perf))
+# === HEADER ===
+cols = st.columns([3, 1])
+with cols[0]:
+    st.markdown(
+        '<div class="main-header"><h1>Edge Engine</h1>'
+        '<div class="subtitle">VN Stock Ranking — T+20 Outperformance</div></div>',
+        unsafe_allow_html=True,
+    )
+with cols[1]:
+    st.markdown(
+        f'<div style="text-align:right;padding-top:1rem">'
+        f'<span class="live-dot"></span>'
+        f'<span style="color:#666;font-size:0.8rem">{date.today().isoformat()}</span></div>',
+        unsafe_allow_html=True,
+    )
 
-    if sigs is not None and not sigs.empty:
-        st.subheader("Top 3 Mới Nhất")
-        cols = st.columns(3)
-        for i, (_, row) in enumerate(sigs.iterrows()):
-            if i >= 3:
-                break
-            with cols[i]:
-                score = row.get("score", 0)
-                st.metric(f"#{row.get('rank', i+1)} — {row.get('ticker', '?')}", f"{float(score):.2%}", delta="BUY")
+# === TODAY'S SIGNALS ===
+today_sigs = sigs[sigs["signal_date"] == str(date.today())] if not sigs.empty else pd.DataFrame()
+if not today_sigs.empty:
+    st.markdown('<div class="section-title">TODAY\'S TOP 3 PICKS</div>', unsafe_allow_html=True)
 
-    st.caption(f"Pipeline runs: {run_count} | Data source: {data_source}")
+    tickers = []
+    scores = []
+    sls = []
+    tps = []
+    for _, r in today_sigs.iterrows():
+        tickers.append(r.get("ticker", "?"))
+        scores.append(r.get("score", 0))
+        sls.append(r.get("stop_loss", -0.03))
+        tps.append(r.get("take_profit", 0.08))
 
-except Exception as e:
-    st.warning(f"Không thể tải dữ liệu ({e})")
+    # Sort by rank
+    pairs = sorted(zip(tickers, scores, sls, tps), key=lambda x: x[1], reverse=True)
 
-st.sidebar.markdown("### Navigation")
-st.sidebar.page_link("app.py", label="Overview", disabled=True)
-st.sidebar.page_link("pages/ranking.py", label="Ranking")
-st.sidebar.page_link("pages/tracking.py", label="Tracking")
+    cards_html = '<div class="signal-grid">'
+    medals = ["#1", "#2", "#3"]
+    for i, (ticker, score, sl, tp) in enumerate(pairs[:3]):
+        cards_html += f"""
+        <div class="signal-card">
+            <div class="rank-badge">{medals[i]}</div>
+            <div class="ticker">{ticker}</div>
+            <div class="score">Score {score:.2%}</div>
+            <div class="meta">
+                <span class="sl">SL {sl:+.0%}</span>
+                <span class="tp">TP {tp:+.0%}</span>
+            </div>
+        </div>"""
+    cards_html += "</div>"
+    st.markdown(cards_html, unsafe_allow_html=True)
+else:
+    st.info("No signal for today yet. Pipeline runs every trading day at 9 AM VN time.")
 
+
+# === KPI ROW ===
+st.markdown('<div class="section-title">PERFORMANCE OVERVIEW</div>', unsafe_allow_html=True)
+
+if perf is not None and not perf.empty:
+    total_signals = int(perf["total_picks"].sum()) if "total_picks" in perf else len(perf)
+    win_rate = perf["win_rate"].mean() if "win_rate" in perf else 0
+    avg_ret = perf["avg_excess_return"].mean() if "avg_excess_return" in perf else 0
+    trading_days = len(perf)
+    wins = int(perf["wins"].sum()) if "wins" in perf else 0
+
+    kpi_html = '<div class="kpi-row">'
+    kpi_data = [
+        ("📊", f"{total_signals}", "Total Signals", ""),
+        ("🎯", f"{win_rate:.1%}", "Win Rate", "kpi-green"),
+        ("💰", f"{avg_ret:+.2%}", "Avg Excess Return", "kpi-green" if avg_ret > 0 else "kpi-red"),
+        ("📅", f"{trading_days}", "Trading Days", "kpi-blue"),
+        ("🏆", f"{wins}/{total_signals}", "Wins", "kpi-green"),
+    ]
+    for icon, val, label, cls in kpi_data:
+        kpi_html += f"""
+        <div class="kpi-card">
+            <div style="font-size:1.3rem;margin-bottom:0.3rem">{icon}</div>
+            <div class="kpi-value {cls}">{val}</div>
+            <div class="kpi-label">{label}</div>
+        </div>"""
+    kpi_html += "</div>"
+    st.markdown(kpi_html, unsafe_allow_html=True)
+else:
+    st.info("No actuals data yet. Pipeline needs ~20 days to accumulate results.")
+
+
+# === HISTORY TABLE ===
+st.markdown('<div class="section-title">RECENT SIGNALS</div>', unsafe_allow_html=True)
+
+if not sigs.empty:
+    display = sigs.sort_values(["signal_date", "rank"], ascending=[False, True]).head(30).copy()
+    display["signal_date"] = pd.to_datetime(display["signal_date"]).dt.strftime("%d/%m/%Y")
+    display["score"] = display["score"].apply(lambda x: f"{x:.2%}")
+    display["excess"] = display["actual_excess_return_5d"].apply(
+        lambda x: f"{x:+.2%}" if pd.notna(x) else "—"
+    )
+    display["result"] = display["actual_outperform"].apply(
+        lambda x: '<span class="badge badge-win">WIN</span>' if x == 1
+        else ('<span class="badge badge-loss">LOSS</span>' if x == 0
+              else '<span class="badge badge-pending">PENDING</span>')
+    )
+    table = display[["signal_date", "ticker", "score", "excess", "result"]].rename(columns={
+        "signal_date": "Date", "ticker": "Ticker", "score": "Score",
+        "excess": "Excess Return", "result": "Result",
+    })
+    st.markdown(table.to_html(escape=False, index=False, classes="dataframe"), unsafe_allow_html=True)
+else:
+    st.caption("No signal history yet.")
+
+
+# === FOOTER ===
 st.markdown(
-    """
-### Pipeline
-**Data** Yahoo Finance → **Features** Returns/RS/ATR/Volume → **XGBoost Ensemble** → **Ranking** → **Signal** Top3
-
-### Commands
-| `python -m src.cli pipeline` | Chạy pipeline + sync lên cloud |
-| `python -m src.cli backfill` | Cập nhật kết quả thực tế T+20 |
-| `python -m src.cli summary`  | Xem performance history |
-| `python -m src.cli signal`   | Xem tín hiệu mới nhất |
-| `python -m src.cli history`  | Full history + tracker |
-
-### Deployment
-Code: [Edge Engine Agent OS](https://github.com/Zitgamo/edge-engine-agent-os)
-"""
+    '<div style="text-align:center;color:#333;font-size:0.7rem;margin-top:3rem;padding:1rem;'
+    'border-top:1px solid #1A1D29">'
+    "Edge Engine Agent OS &mdash; Data: Yahoo Finance &mdash; Model: XGBoost Ensemble</div>",
+    unsafe_allow_html=True,
 )

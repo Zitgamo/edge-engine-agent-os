@@ -10,70 +10,125 @@ if str(_root) not in sys.path:
 
 import pandas as pd
 import streamlit as st
+import plotly.express as px
+import plotly.graph_objects as go
 
-st.set_page_config(page_title="Tracking", layout="wide")
-st.title("Performance Tracking")
+from src.dashboard.style import CUSTOM_CSS
 
-use_cloud = os.getenv("SUPABASE_URL") and os.getenv("SUPABASE_ANON_KEY")
-
-
-def load_local():
-    from src.database import get_performance_summary, get_signals
-    perf = get_performance_summary()
-    history = get_signals(limit=50)
-    return perf, history
+st.set_page_config(page_title="Performance", page_icon="📊", layout="wide")
+st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
 
-def load_cloud():
-    from src.supabase_client import get_client
-    client = get_client()
-    if client is None:
-        return pd.DataFrame(), pd.DataFrame()
-    perf_raw = client.get_performance_summary()
-    sigs_raw = client.get_signals(limit=50)
-    perf = pd.DataFrame(perf_raw)
-    history = pd.DataFrame(sigs_raw)
-    return perf, history
+def load_data():
+    use_cloud = os.getenv("SUPABASE_URL") and os.getenv("SUPABASE_ANON_KEY")
+    try:
+        if use_cloud:
+            from src.supabase_client import get_client
+            client = get_client()
+            if not client:
+                return pd.DataFrame()
+            raw = client.get_performance_summary()
+            return pd.DataFrame(raw) if raw else pd.DataFrame()
+        else:
+            from src.database import get_performance_summary
+            return get_performance_summary()
+    except Exception:
+        return pd.DataFrame()
 
 
-try:
-    if use_cloud:
-        perf, history = load_cloud()
-    else:
-        perf, history = load_local()
+st.markdown(
+    '<div class="main-header"><h1>Performance Analytics</h1>'
+    '<div class="subtitle">Real results tracked at T+20</div></div>',
+    unsafe_allow_html=True,
+)
 
-    if perf.empty:
-        st.info("Chưa có dữ liệu performance. Chạy pipeline để tích lũy actuals.")
-    else:
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Tổng tín hiệu", int(perf["total_picks"].sum()) if "total_picks" in perf else int(len(perf)))
-        col2.metric("Win Rate TB", f"{perf['win_rate'].mean():.1%}" if "win_rate" in perf else "N/A")
-        col3.metric("Avg Excess Return", f"{perf['avg_excess_return'].mean():+.3%}" if "avg_excess_return" in perf else "N/A")
-        col4.metric("Số ngày giao dịch", len(perf))
+perf = load_data()
 
-        if "win_rate" in perf.columns:
-            st.subheader("Win Rate Theo Ngày")
-            chart_df = perf[["signal_date", "win_rate"]].copy()
-            chart_df["signal_date"] = pd.to_datetime(chart_df["signal_date"])
-            chart_df = chart_df.sort_values("signal_date")
-            st.line_chart(chart_df.set_index("signal_date")["win_rate"])
+if perf.empty:
+    st.info("No performance data yet. Pipeline needs ~20 days to accumulate actuals.")
+    st.stop()
 
-        if "avg_excess_return" in perf.columns:
-            st.subheader("Excess Return Tích Lũy")
-            perf_sorted = perf.sort_values("signal_date")
-            perf_sorted["cum_excess"] = (1 + perf_sorted["avg_excess_return"].fillna(0)).cumprod() - 1
-            cum_chart = perf_sorted[["signal_date", "cum_excess"]].copy()
-            cum_chart["signal_date"] = pd.to_datetime(cum_chart["signal_date"])
-            st.line_chart(cum_chart.set_index("signal_date")["cum_excess"])
+perf["signal_date"] = pd.to_datetime(perf["signal_date"])
+perf = perf.sort_values("signal_date")
 
-            st.subheader("Chi Tiết Từng Ngày")
-            st.dataframe(perf_sorted, use_container_width=True)
+total = int(perf["total_picks"].sum()) if "total_picks" in perf else 0
+wins = int(perf["wins"].sum()) if "wins" in perf else 0
+win_rate = perf["win_rate"].mean() if "win_rate" in perf else 0
+avg_ret = perf["avg_excess_return"].mean() if "avg_excess_return" in perf else 0
 
-    if not history.empty:
-        st.divider()
-        st.subheader("Lịch Sử Tín Hiệu")
-        history["signal_date"] = pd.to_datetime(history["signal_date"])
-        st.dataframe(history.sort_values(["signal_date", "rank"], ascending=[False, True]), use_container_width=True)
+col1, col2, col3, col4 = st.columns(4)
+col1.metric("Total Picks", total)
+col2.metric("Win Rate", f"{win_rate:.1%}")
+col3.metric("Avg Excess Return", f"{avg_ret:+.2%}")
+col4.metric("Trading Days", len(perf))
 
-except Exception as e:
-    st.error(f"Error: {e}")
+# Win Rate Chart
+st.markdown('<div class="section-title">WIN RATE OVER TIME</div>', unsafe_allow_html=True)
+fig1 = px.bar(
+    perf,
+    x="signal_date",
+    y="win_rate",
+    title=None,
+    labels={"signal_date": "", "win_rate": "Win Rate"},
+    color="win_rate",
+    color_continuous_scale=["#FF5252", "#FFA726", "#00C853"],
+    range_color=[0, 1],
+    height=300,
+)
+fig1.update_layout(
+    plot_bgcolor="rgba(0,0,0,0)",
+    paper_bgcolor="rgba(0,0,0,0)",
+    font_color="#888",
+    margin=dict(l=0, r=0, t=0, b=0),
+    yaxis_tickformat=".0%",
+    coloraxis_showscale=False,
+)
+fig1.update_xaxes(gridcolor="#1A1D29")
+fig1.update_yaxes(gridcolor="#1A1D29", range=[0, 1])
+st.plotly_chart(fig1, use_container_width=True)
+
+# Cumulative Excess Return
+st.markdown('<div class="section-title">CUMULATIVE EXCESS RETURN</div>', unsafe_allow_html=True)
+perf["cum_excess"] = (1 + perf["avg_excess_return"].fillna(0)).cumprod() - 1
+
+fig2 = go.Figure()
+fig2.add_trace(go.Scatter(
+    x=perf["signal_date"],
+    y=perf["cum_excess"],
+    mode="lines",
+    name="Cumulative Excess Return",
+    line=dict(color="#00C853", width=2),
+    fill="tozeroy",
+    fillcolor="rgba(0,200,83,0.08)",
+))
+fig2.update_layout(
+    plot_bgcolor="rgba(0,0,0,0)",
+    paper_bgcolor="rgba(0,0,0,0)",
+    font_color="#888",
+    margin=dict(l=0, r=0, t=0, b=0),
+    yaxis_tickformat="+.1%",
+    hovermode="x unified",
+    height=300,
+)
+fig2.update_xaxes(gridcolor="#1A1D29")
+fig2.update_yaxes(gridcolor="#1A1D29")
+st.plotly_chart(fig2, use_container_width=True)
+
+# Daily breakdown
+st.markdown('<div class="section-title">DAILY BREAKDOWN</div>', unsafe_allow_html=True)
+daily = perf[["signal_date", "total_picks", "wins", "win_rate", "avg_excess_return"]].copy()
+daily["signal_date"] = daily["signal_date"].dt.strftime("%d/%m/%Y")
+daily["win_rate"] = daily["win_rate"].apply(lambda x: f"{x:.0%}")
+daily["avg_excess_return"] = daily["avg_excess_return"].apply(lambda x: f"{x:+.2%}")
+daily = daily.rename(columns={
+    "signal_date": "Date", "total_picks": "Picks", "wins": "Wins",
+    "win_rate": "Win Rate", "avg_excess_return": "Avg Return",
+})
+st.dataframe(daily, use_container_width=True, hide_index=True)
+
+st.markdown(
+    '<div style="text-align:center;color:#333;font-size:0.7rem;margin-top:3rem;'
+    'border-top:1px solid #1A1D29;padding:1rem">'
+    "Results are excess returns vs VNINDEX over T+20 holding period.</div>",
+    unsafe_allow_html=True,
+)
