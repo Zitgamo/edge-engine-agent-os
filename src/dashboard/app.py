@@ -181,14 +181,17 @@ try:
             rows_html = ""
             for r in tracking_results:
                 pnl_cls = "kpi-green" if r["pnl"] > 0 else "kpi-red"
-                status_badge = {
-                    "SETTLING": '<span class="badge badge-pending">T+2...</span>',
-                    "ACTIVE": '<span class="badge badge-pending">ACTIVE</span>',
-                    "HIT_TP": '<span class="badge badge-win">HIT TP</span>',
-                    "HIT_SL": '<span class="badge badge-loss">HIT SL</span>',
-                    "EXPIRED": '<span class="badge badge-pending">EXPIRED</span>',
-                    "NO_DATA": "—",
-                }.get(r["status"], r["status"])
+                if r["status"] == "SETTLING":
+                    sd = r.get("settlement_delay", 2)
+                    status_badge = f'<span class="badge badge-pending">T+2 ({r["days_held"]}/{sd})</span>'
+                else:
+                    status_badge = {
+                        "ACTIVE": '<span class="badge badge-pending">ACTIVE</span>',
+                        "HIT_TP": '<span class="badge badge-win">HIT TP</span>',
+                        "HIT_SL": '<span class="badge badge-loss">HIT SL</span>',
+                        "EXPIRED": '<span class="badge badge-pending">EXPIRED</span>',
+                        "NO_DATA": "—",
+                    }.get(r["status"], r["status"])
                 rows_html += f"""<tr>
                     <td>{r['ticker']}</td>
                     <td>{r['signal_date'][:10]}</td>

@@ -168,10 +168,14 @@ try:
             # Table
             rows = []
             for r in results:
+                status = r["status"]
+                if status == "SETTLING":
+                    sd = r.get("settlement_delay", 2)
+                    status = f"T+2 ({r['days_held']}/{sd})"
                 rows.append({
                     "Ticker": r["ticker"],
                     "Date": r["signal_date"][:10],
-                    "Status": r["status"],
+                    "Status": status,
                     "P&L": r["pnl"],
                     "Days": r["days_held"],
                     "Entry": r.get("entry_price", 0),
