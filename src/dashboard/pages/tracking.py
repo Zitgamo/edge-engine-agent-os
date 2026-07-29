@@ -163,7 +163,7 @@ try:
             c3.metric("Hit SL", summary["hit_sl"])
             c4.metric("Active", summary["active"])
             c5.metric("Win Rate", f"{summary['win_rate']:.0f}%")
-            c6.metric("Total P&L", f"{summary['total_pnl']:+.2%}")
+            c6.metric("Portfolio P&L", f"{summary['total_pnl']:+.2%}")
 
             # Table
             rows = []

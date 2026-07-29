@@ -200,7 +200,12 @@ def track_signals(
 
 
 def get_signal_summary(results: list[dict[str, Any]]) -> dict[str, Any]:
-    """Aggregate tracking results into a summary."""
+    """Aggregate tracking results into a portfolio-level summary.
+
+    Equal-weight allocation: each signal gets equal share of capital,
+    so daily portfolio return = average return across all signals that day.
+    Cumulative portfolio P&L = product of (1 + daily_return) across dates.
+    """
     total = len(results)
     settling = sum(1 for r in results if r["status"] == "SETTLING")
     hit_tp = sum(1 for r in results if r["status"] == "HIT_TP")
@@ -208,8 +213,16 @@ def get_signal_summary(results: list[dict[str, Any]]) -> dict[str, Any]:
     active = sum(1 for r in results if r["status"] == "ACTIVE")
     expired = sum(1 for r in results if r["status"] == "EXPIRED")
 
+    # Group by signal_date → equal-weight portfolio return
+    by_date: dict[str, list[float]] = {}
+    for r in results:
+        d = str(r.get("signal_date", ""))[:10]
+        by_date.setdefault(d, []).append(r["pnl"])
+
+    dates_sorted = sorted(by_date.keys())
+    daily_returns = [np.mean(by_date[d]) for d in dates_sorted]
+    portfolio_pnl = np.prod([1 + dr for dr in daily_returns]) - 1 if daily_returns else 0.0
     avg_pnl = np.mean([r["pnl"] for r in results]) if results else 0.0
-    total_pnl = sum(r["pnl"] for r in results)
 
     return {
         "total": total,
@@ -220,5 +233,6 @@ def get_signal_summary(results: list[dict[str, Any]]) -> dict[str, Any]:
         "expired": expired,
         "win_rate": hit_tp / (hit_tp + hit_sl) * 100 if (hit_tp + hit_sl) > 0 else 0.0,
         "avg_pnl": round(avg_pnl, 4),
-        "total_pnl": round(total_pnl, 4),
+        "portfolio_pnl": round(portfolio_pnl, 4),
+        "total_pnl": round(portfolio_pnl, 4),
     }
