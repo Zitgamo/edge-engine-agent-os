@@ -80,7 +80,7 @@ def simulate_holding(
 
     idx = dates.index(signal_date)
     if idx + 1 >= len(dates):
-        return {"status": "NO_DATA", "pnl": 0.0, "days_held": 0}
+        return {"status": "PENDING", "pnl": 0.0, "days_held": 0}
 
     df_after = df.iloc[idx + 1:].reset_index(drop=True)
     sl_price = entry_price * (1 + stop_loss)

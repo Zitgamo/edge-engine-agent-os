@@ -172,6 +172,8 @@ try:
                 if status == "SETTLING":
                     sd = r.get("settlement_delay", 2)
                     status = f"T+2 ({r['days_held']}/{sd})"
+                elif status == "PENDING":
+                    status = "PENDING (chờ T+1)"
                 rows.append({
                     "Ticker": r["ticker"],
                     "Date": r["signal_date"][:10],

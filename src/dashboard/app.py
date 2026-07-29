@@ -190,7 +190,8 @@ try:
                         "HIT_TP": '<span class="badge badge-win">HIT TP</span>',
                         "HIT_SL": '<span class="badge badge-loss">HIT SL</span>',
                         "EXPIRED": '<span class="badge badge-pending">EXPIRED</span>',
-                        "NO_DATA": "—",
+                        "PENDING": '<span class="badge badge-pending">PENDING</span>',
+                        "NO_DATA": '<span class="badge badge-pending">NO DATA</span>',
                     }.get(r["status"], r["status"])
                 rows_html += f"""<tr>
                     <td>{r['ticker']}</td>
