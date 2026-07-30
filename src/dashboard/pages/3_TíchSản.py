@@ -322,11 +322,17 @@ if run_btn:
                     summary = summarize_portfolio(port)
 
                     if summary:
+                        def fmt_vnd(v):
+                            if abs(v) >= 1e9:
+                                return f"{v/1e9:.2f} tỷ"
+                            elif abs(v) >= 1e6:
+                                return f"{v/1e6:.0f} tr"
+                            return f"{v:,.0f}"
                         c1, c2, c3, c4, c5 = st.columns(5)
                         c1.metric("Số mã nắm giữ", summary["holdings"])
-                        c2.metric("Tổng đầu tư", f"{summary['total_invested']:,.0f}")
-                        c3.metric("Giá trị danh mục", f"{summary['total_value']:,.0f}")
-                        c4.metric("Lời lỗ", f"{summary['pnl']:+,.0f}", delta=f"{summary['pnl_pct']*100:+.2f}%")
+                        c2.metric("Tổng đầu tư", fmt_vnd(summary['total_invested']))
+                        c3.metric("Giá trị danh mục", fmt_vnd(summary['total_value']))
+                        c4.metric("Lời lỗ", fmt_vnd(summary['pnl']), delta=f"{summary['pnl_pct']*100:+.2f}%")
                         c5.metric("CAGR", f"{summary['cagr']*100:+.2f}%")
 
                         # Portfolio value chart
@@ -351,11 +357,19 @@ if run_btn:
                         st.markdown("### Chi tiết danh mục hiện tại")
                         latest = port[port["date"] == port["date"].max()].copy()
                         latest_display = latest[["ticker", "signal", "shares", "cost_basis", "value", "pnl", "pnl_pct"]].copy()
-                        latest_display["signal"] = latest_display["signal"].apply(lambda x: {"ACCUMULATE": "+ Tích lũy mạnh", "NORMAL": "= Tích lũy", "WATCH": "? Theo dõi", "EXIT": "! Ngừng/Thoát", "BUY": "+ Mua mới", "HOLD": "- Giữ"}.get(x, x))
+                        labels = {"ACCUMULATE": "Tích mạnh", "NORMAL": "Tích đều", "WATCH": "Theo dõi", "EXIT": "Ngừng/Thoát", "BUY": "Mua mới", "HOLD": "Giữ"}
+                        latest_display["signal"] = latest_display["signal"].map(labels).fillna(latest_display["signal"])
                         latest_display["shares"] = latest_display["shares"].apply(lambda x: f"{x:,.1f}")
-                        latest_display["cost_basis"] = latest_display["cost_basis"].apply(lambda x: f"{x:,.0f}")
-                        latest_display["value"] = latest_display["value"].apply(lambda x: f"{x:,.0f}")
-                        latest_display["pnl"] = latest_display["pnl"].apply(lambda x: f"{x:+,.0f}")
+                        def fmt(x):
+                            if abs(x) >= 1e9: return f"{x/1e9:.2f}t" if x >= 0 else f"-{abs(x)/1e9:.2f}t"
+                            if abs(x) >= 1e6: return f"{x/1e6:.0f}tr" if x >= 0 else f"-{abs(x)/1e6:.0f}tr"
+                            return f"{x:,.0f}"
+                        def fmt_pnl(x):
+                            s = fmt(x)
+                            return f"+{s[1:]}" if x > 0 else s
+                        latest_display["cost_basis"] = latest_display["cost_basis"].apply(fmt)
+                        latest_display["value"] = latest_display["value"].apply(fmt)
+                        latest_display["pnl"] = latest_display["pnl"].apply(fmt_pnl)
                         latest_display["pnl_pct"] = latest_display["pnl_pct"].apply(lambda x: f"{x:+.2%}")
                         latest_display = latest_display.rename(columns={
                             "ticker": "Mã", "signal": "Tín hiệu", "shares": "Số lượng",
