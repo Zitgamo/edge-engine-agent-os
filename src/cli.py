@@ -41,8 +41,10 @@ def main() -> None:
         sm = StrategyManager()
         sm.backfill_strategy_actuals()
         sm.show_comparison()
-        best = sm.get_best_strategy()
-        print(f"Recommended strategy: {best}")
+        weights = sm.get_strategy_weights()
+        print(f"\nEnsemble weights (no hard switch):")
+        for name, w in sorted(weights.items(), key=lambda x: -x[1]):
+            print(f"  {name:<20} weight={w:.2f}")
 
     elif cmd == "summary":
         from src.database import get_conn

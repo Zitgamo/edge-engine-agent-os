@@ -171,10 +171,8 @@ def run_pipeline(config: Config | None = None) -> None:
     sm.save_signals(rankings, n=N_PICKS)
     sm.backfill_strategy_actuals()
 
-    best_strat = sm.get_best_strategy()
-    log.info("Best strategy today: '%s'", best_strat)
-
-    ranking = rankings.get(best_strat, rankings.get("outperform", pd.DataFrame()))
+    ranking = rankings.get("_ensemble", rankings.get("outperform", pd.DataFrame()))
+    log.info("Using ensemble ranking: %s", list(ranking.head(3)["ticker"]) if not ranking.empty else "empty")
     storage.save_processed(ranking, "ranking.parquet")
 
     signal = SignalGenerator().pick_top_n(
@@ -184,7 +182,7 @@ def run_pipeline(config: Config | None = None) -> None:
     )
     storage.save_processed(signal, "signal.parquet")
     save_signals(signal)
-    log.info("Top %d (%s): %s", N_PICKS, best_strat, list(signal["ticker"]))
+    log.info("Top %d (ensemble): %s", N_PICKS, list(signal["ticker"]))
 
     log.info("=== Ceiling context analysis (top picks) ===")
     from src.filters.ceiling_context import report_ceiling_context
@@ -199,7 +197,7 @@ def run_pipeline(config: Config | None = None) -> None:
 
     log.info("=== Telegram notification ===")
     from src.notification.telegram import send_signal
-    send_signal(signal, best_strat)
+    send_signal(signal, "ensemble")
 
     save_pipeline_run(all_metrics.get("T+5", {}))
     log.info("=== Backfilling actuals (T+%d) ===", HOLDING_PERIOD)

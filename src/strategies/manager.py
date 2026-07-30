@@ -19,8 +19,7 @@ from src.strategies.defensive import DefensiveStrategy
 
 log = logging.getLogger(__name__)
 
-
-STRATEGIES: list[Strategy] = [
+ENSEMBLE_STRATEGIES: list[Strategy] = [
     OutperformStrategy(),
     RSMomentumStrategy(),
     MeanReversionStrategy(),
@@ -34,7 +33,7 @@ STRATEGIES: list[Strategy] = [
 
 class StrategyManager:
     def __init__(self, holding_period: int = 20) -> None:
-        self.strategies = STRATEGIES
+        self.strategies = ENSEMBLE_STRATEGIES
         self.holding_period = holding_period
         self._init_db()
 
@@ -68,6 +67,9 @@ class StrategyManager:
                 log.info("Strategy '%s' ranked %d stocks", strategy.name, len(ranking))
             except Exception as e:
                 log.error("Strategy '%s' failed: %s", strategy.name, e)
+
+        ensemble = self.get_ensemble_ranking(results)
+        results["_ensemble"] = ensemble
         return results
 
     def save_signals(self, rankings: dict[str, pd.DataFrame], n: int = 5) -> None:
@@ -92,7 +94,12 @@ class StrategyManager:
         conn.close()
         log.info("Saved %d strategy signals for %s", len(rows), sig_date)
 
-    def get_best_strategy(self, min_signals: int = 20) -> str:
+    def get_strategy_weights(self, min_signals: int = 10) -> dict[str, float]:
+        """Get performance-based weights for each strategy.
+        
+        No hard switching: all strategies contribute proportionally.
+        Weight = max(0.1, normalized_score) so no strategy is ever zero.
+        """
         conn = get_conn()
         df = pd.read_sql_query(
             """SELECT strategy_name, actual_outperform, actual_excess_return_5d
@@ -102,9 +109,12 @@ class StrategyManager:
         )
         conn.close()
 
+        strat_names = [s.name for s in self.strategies]
+        weights = {name: 1.0 for name in strat_names}
+
         if df.empty:
-            log.info("No realized signals yet, defaulting to 'outperform'")
-            return "outperform"
+            log.info("No realized signals — equal weights for all strategies")
+            return weights
 
         grouped = df.groupby("strategy_name").agg(
             count=("actual_outperform", "count"),
@@ -112,15 +122,51 @@ class StrategyManager:
             avg_return=("actual_excess_return_5d", "mean"),
         ).reset_index()
 
-        grouped = grouped[grouped["count"] >= min_signals]
-        if grouped.empty:
-            return "outperform"
+        for _, row in grouped.iterrows():
+            name = row["strategy_name"]
+            if name not in weights:
+                continue
+            if row["count"] < min_signals:
+                continue
+            wr = row["win_rate"] if pd.notna(row["win_rate"]) else 0.5
+            ar = row["avg_return"] if pd.notna(row["avg_return"]) else 0.0
+            ar_norm = max(-0.1, min(0.1, ar)) / 0.1
+            weights[name] = max(0.1, wr * 0.6 + ar_norm * 0.4)
 
-        grouped["score"] = grouped["win_rate"] * 0.5 + grouped["avg_return"].clip(-1, 1) * 0.5
-        best = grouped.sort_values("score", ascending=False).iloc[0]
-        log.info("Best strategy: '%s' (win_rate=%.1f%%, avg_ret=%.2f%%)",
-                 best["strategy_name"], best["win_rate"] * 100, best["avg_return"] * 100)
-        return best["strategy_name"]
+        log.info("Strategy weights: %s", {k: f"{v:.2f}" for k, v in sorted(weights.items())})
+        return weights
+
+    def get_ensemble_ranking(self, rankings: dict[str, pd.DataFrame]) -> pd.DataFrame:
+        """Blend all strategy rankings into one ensemble ranking by weighted rank."""
+        weights = self.get_strategy_weights()
+        latest_date = None
+        all_ranked: dict[str, float] = {}
+
+        for name, ranking in rankings.items():
+            w = weights.get(name, 1.0)
+            if ranking.empty:
+                continue
+            if latest_date is None:
+                latest_date = ranking["date"].max()
+            latest = ranking[ranking["date"] == ranking["date"].max()]
+            for _, r in latest.iterrows():
+                ticker = r["ticker"]
+                rank = int(r["rank"])
+                score_inv = 1.0 / rank
+                all_ranked[ticker] = all_ranked.get(ticker, 0.0) + score_inv * w
+
+        if not all_ranked:
+            return pd.DataFrame()
+
+        ensemble = pd.DataFrame([
+            {"ticker": t, "date": latest_date, "score": s / sum(weights.values())}
+            for t, s in all_ranked.items()
+        ])
+        ensemble = ensemble.sort_values("score", ascending=False).reset_index(drop=True)
+        ensemble["rank"] = range(1, len(ensemble) + 1)
+        ensemble["ensemble_score"] = ensemble["score"]
+        log.info("Ensemble ranking: top 3 = %s", list(ensemble.head(3)["ticker"]))
+        return ensemble
 
     def backfill_strategy_actuals(self) -> int:
         conn = get_conn()
