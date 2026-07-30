@@ -28,20 +28,20 @@ st.markdown(
 
 # Sidebar params
 with st.sidebar:
-    st.markdown("### Parameters")
-    monthly = st.number_input("Monthly investment (VND)", min_value=1_000_000, value=10_000_000, step=1_000_000, format="%d")
-    freq = st.selectbox("Frequency", ["monthly", "quarterly"], index=0)
-    start = st.date_input("Start date", value=pd.to_datetime("2020-01-01"))
-    ticker_input = st.text_input("Ticker (comma-separated)", value="HPG, FPT, VNM, ACB, VCB")
-    run_btn = st.button("Run Backtest", type="primary")
+    st.markdown("### Thông số")
+    monthly = st.number_input("Số tiền mỗi tháng (VND)", min_value=1_000_000, value=10_000_000, step=1_000_000, format="%d")
+    freq = st.selectbox("Tần suất", ["monthly", "quarterly"], index=0)
+    start = st.date_input("Ngày bắt đầu", value=pd.to_datetime("2020-01-01"))
+    ticker_input = st.text_input("Mã cổ phiếu (cách nhau bằng dấu phẩy)", value="HPG, FPT, VNM, ACB, VCB")
+    run_btn = st.button("Chạy Backtest", type="primary")
 
 if run_btn:
     tickers = [t.strip().upper() for t in ticker_input.split(",") if t.strip()]
 
-    tab1, tab2, tab3 = st.tabs(["Comparison", "Detail", "Strategy Rank"])
+    tab1, tab2, tab3 = st.tabs(["So Sánh", "Chi Tiết", "Xếp Hạng"])
 
     with tab1:
-        st.markdown("### Multi-stock comparison")
+        st.markdown("### So sánh nhiều mã")
         with st.spinner(f"Backtesting {len(tickers)} tickers..."):
             df = backtest_multi(
                 tickers=tickers,
@@ -86,8 +86,8 @@ if run_btn:
             st.plotly_chart(fig, use_container_width=True)
 
     with tab2:
-        st.markdown("### Single stock detail")
-        detail_ticker = st.selectbox("Select ticker", tickers if tickers else ["HPG"])
+        st.markdown("### Chi tiết từng mã")
+        detail_ticker = st.selectbox("Chọn mã", tickers if tickers else ["HPG"])
         with st.spinner(f"Backtesting {detail_ticker}..."):
             result = backtest_tich_san(
                 ticker=detail_ticker,
@@ -147,7 +147,7 @@ if run_btn:
             st.plotly_chart(fig, use_container_width=True)
 
             # DCA history table
-            st.markdown("### DCA History (last 24 months)")
+            st.markdown("### Lịch sử DCA (24 tháng gần nhất)")
             dca_display = dca_df.tail(24).copy()
             dca_display["date"] = pd.to_datetime(dca_display["date"]).dt.strftime("%Y-%m-%d")
             dca_display["price"] = dca_display["price"].apply(lambda x: f"{x:,.0f}")
@@ -166,17 +166,13 @@ if run_btn:
             st.error(f"No data for {detail_ticker}")
 
     with tab3:
-        st.markdown("### Accumulation Strategy Ranking")
-        st.caption("Stocks ranked by tích sản criteria: high ROE, low PE/PB, stable growth, low volatility")
+        st.markdown("### Xếp Hạng Cổ Phiếu Tích Sản")
+        st.caption("Cổ phiếu được xếp hạng theo tiêu chí tích sản: ROE cao, PE/PB thấp, tăng trưởng ổn định, biến động thấp")
         try:
             from src.strategies.accumulation import AccumulationStrategy
-            from src.data.storage import PriceStorage
-            from src.config import Config
-            storage = PriceStorage(Config())
-            df_feat = storage.load_processed("features.parquet")
-            if df_feat.empty:
-                st.info("Run pipeline first to generate features")
-            else:
+            feat_path = _root / "data" / "processed" / "features.parquet"
+            if feat_path.exists():
+                df_feat = pd.read_parquet(feat_path)
                 strat = AccumulationStrategy()
                 ranking = strat.rank(df_feat)
                 if not ranking.empty:
@@ -185,8 +181,10 @@ if run_btn:
                     st.dataframe(top, use_container_width=True, hide_index=True)
                 else:
                     st.info("No ranking available")
+            else:
+                st.info("Chưa có dữ liệu. Chạy pipeline trước để tạo features.")
         except Exception as e:
             st.info(f"Strategy ranking unavailable: {e}")
 
 else:
-    st.info("Adjust parameters in the sidebar and click **Run Backtest**")
+    st.info("Điều chỉnh thông số bên sidebar và nhấn **Chạy Backtest**")
