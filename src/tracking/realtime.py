@@ -15,7 +15,7 @@ log = logging.getLogger(__name__)
 
 
 def load_stock_data(ticker: str, data_dir: str | None = None) -> pd.DataFrame | None:
-    """Load raw OHLCV data for a ticker — tries parquet first, then yfinance fallback."""
+    """Load raw OHLCV data for a ticker — parquet only, no yfinance fallback to keep data consistent."""
     if data_dir is None:
         data_dir = str(Config.raw_data_dir)
     pattern = os.path.join(data_dir, f"{ticker}_raw.parquet")
@@ -27,24 +27,7 @@ def load_stock_data(ticker: str, data_dir: str | None = None) -> pd.DataFrame | 
             return df
         except Exception as e:
             log.warning("Cannot load parquet %s: %s", ticker, e)
-
-    # Fallback: fetch from yfinance
-    try:
-        import yfinance as yf
-        stock = yf.Ticker(f"{ticker}.VN" if not ticker.startswith("VN") else ticker)
-        df = stock.history(period="1y")
-        if df.empty:
-            return None
-        df = df.reset_index()
-        df.columns = [c.lower().replace(" ", "_") for c in df.columns]
-        if "date" not in df.columns and "datetime" in df.columns:
-            df = df.rename(columns={"datetime": "date"})
-        df = df.sort_values("date").reset_index(drop=True)
-        log.info("Fetched %s from yfinance (%d rows)", ticker, len(df))
-        return df
-    except Exception as e:
-        log.warning("Cannot fetch %s from yfinance: %s", ticker, e)
-        return None
+    return None
 
 
 TRADING_DAYS_PER_YEAR = 252
