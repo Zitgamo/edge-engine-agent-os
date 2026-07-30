@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime, date
 
 import numpy as np
@@ -22,8 +23,30 @@ INVESTMENT_DEFAULTS = {
 
 
 def _fetch_prices(ticker: str, start: str, end: str | None = None) -> pd.DataFrame:
+    # Try cached collector first to avoid yfinance rate limits
+    try:
+        collector = OHLCVCollector(Config())
+        days = (pd.Timestamp.now() - pd.Timestamp(start)).days + 60
+        df = collector.fetch(ticker, days=max(365, days))
+        if df is not None and not df.empty:
+            df = df.sort_values("date").reset_index(drop=True)
+            col_map = {"Close": "close", "Open": "open", "High": "high", "Low": "low", "Volume": "volume"}
+            for old_c, new_c in col_map.items():
+                if old_c in df.columns and new_c not in df.columns:
+                    df = df.rename(columns={old_c: new_c})
+            if "date" in df.columns:
+                df["date"] = pd.to_datetime(df["date"]).dt.normalize()
+            if end:
+                df = df[df["date"] <= pd.to_datetime(end)]
+            df = df[df["date"] >= pd.to_datetime(start)]
+            if not df.empty and "close" in df.columns:
+                return df[["date", "open", "high", "low", "close", "volume"]]
+    except Exception:
+        pass
+
     yf_ticker = f"{ticker}.VN"
     end_str = end or datetime.now().strftime("%Y-%m-%d")
+    time.sleep(1)  # rate limit prevention
     t = yf.Ticker(yf_ticker)
     hist = t.history(start=start, end=end_str)
     if hist.empty:
@@ -84,6 +107,275 @@ def simulate_dca(
         })
 
     return pd.DataFrame(rows)
+
+
+def _load_fundamentals(ticker: str) -> pd.DataFrame:
+    feat_path = Config.processed_data_dir / "features.parquet"
+    if not feat_path.exists():
+        return pd.DataFrame()
+    df = pd.read_parquet(feat_path)
+    ticker_col = "ticker"
+    if ticker_col not in df.columns:
+        return pd.DataFrame()
+    tk = df[df[ticker_col] == ticker].copy()
+    if tk.empty:
+        return pd.DataFrame()
+    tk = tk.sort_values("date")[["date", "pe_ratio", "pb_ratio", "roe", "profit_margin", "log_mcap"]].copy()
+    for col in ["pe_ratio", "pb_ratio"]:
+        if col in tk.columns:
+            pct = tk[col].rank(pct=True)
+            tk[f"{col}_pct"] = pct
+    return tk
+
+
+def _compute_sma_rsi(prices: pd.DataFrame, sma_period: int = 200, rsi_period: int = 14) -> pd.DataFrame:
+    df = prices.copy().sort_values("date")
+    df["sma200"] = df["close"].rolling(sma_period).mean()
+    delta = df["close"].diff()
+    gain = delta.where(delta > 0, 0.0).rolling(rsi_period).mean()
+    loss = (-delta.where(delta < 0, 0.0)).rolling(rsi_period).mean()
+    rs = gain / loss.replace(0, np.nan)
+    df["rsi"] = 100 - (100 / (1 + rs))
+    df["above_sma200"] = (df["close"] > df["sma200"]).astype(float)
+    return df
+
+
+_METHODS = {
+    "fixed": "DCA deu dan",
+    "value": "DCA dinh gia (PE/PB)",
+    "cycle": "DCA chu ky (SMA+RSI)",
+}
+
+
+def simulate_value_dca(
+    prices: pd.DataFrame,
+    fundamentals: pd.DataFrame,
+    monthly_amount: float = 10_000_000,
+    frequency: str = "monthly",
+) -> pd.DataFrame:
+    if prices.empty:
+        return pd.DataFrame()
+    prices = prices.copy().sort_values("date")
+    offset_map = {"monthly": 30, "quarterly": 91, "yearly": 365}
+    days_offset = offset_map.get(frequency, 30)
+    first_date = prices["date"].min()
+    last_date = prices["date"].max()
+    invest_dates = pd.date_range(start=first_date, end=last_date, freq=f"{days_offset}D")
+    invest_dates_set = {d.date() for d in invest_dates}
+
+    fund_map = {}
+    if not fundamentals.empty:
+        for _, r in fundamentals.iterrows():
+            d = r["date"]
+            if isinstance(d, pd.Timestamp):
+                d = d.date()
+            fund_map[d] = r
+
+    rows = []
+    total_shares = 0.0
+    total_invested = 0.0
+    cash_buffer = 0.0
+
+    for i, row in prices.iterrows():
+        d = row["date"]
+        if isinstance(d, pd.Timestamp):
+            d = d.date()
+        price = row["close"]
+        if pd.isna(price) or price <= 0:
+            continue
+
+        if d in invest_dates_set:
+            multiplier = 1.0
+            if d in fund_map:
+                f = fund_map[d]
+                pe_pct = f.get("pe_ratio_pct", np.nan) if "pe_ratio_pct" in f.index or "pe_ratio_pct" in fundamentals.columns else np.nan
+                pb_pct = f.get("pb_ratio_pct", np.nan) if "pb_ratio_pct" in f.index or "pb_ratio_pct" in fundamentals.columns else np.nan
+                if pd.notna(pe_pct):
+                    if pe_pct < 0.2:
+                        multiplier = 1.5
+                    elif pe_pct < 0.4:
+                        multiplier = 1.25
+                    elif pe_pct > 0.7:
+                        multiplier = 0.5
+                    elif pe_pct > 0.9:
+                        multiplier = 0.0
+                if pd.notna(pb_pct) and multiplier > 0:
+                    if pb_pct < 0.2:
+                        multiplier *= 1.3
+                    elif pb_pct > 0.8:
+                        multiplier *= 0.6
+
+            invest = monthly_amount * multiplier + cash_buffer
+            if invest <= 0:
+                cash_buffer = -invest
+                invest = 0
+            if invest > 0:
+                shares_bought = invest / price
+                total_shares += shares_bought
+                total_invested += monthly_amount * multiplier
+                cash_buffer = invest - shares_bought * price
+
+        portfolio_value = total_shares * price
+        rows.append({
+            "date": d, "price": price, "total_shares": total_shares,
+            "total_invested": total_invested, "portfolio_value": portfolio_value,
+            "cash_buffer": cash_buffer,
+            "pnl": portfolio_value - total_invested,
+            "pnl_pct": (portfolio_value - total_invested) / total_invested if total_invested > 0 else 0.0,
+        })
+
+    return pd.DataFrame(rows)
+
+
+def simulate_cycle_dca(
+    prices: pd.DataFrame,
+    monthly_amount: float = 10_000_000,
+    frequency: str = "monthly",
+) -> pd.DataFrame:
+    if prices.empty:
+        return pd.DataFrame()
+    df = _compute_sma_rsi(prices)
+    offset_map = {"monthly": 30, "quarterly": 91, "yearly": 365}
+    days_offset = offset_map.get(frequency, 30)
+    first_date = df["date"].min()
+    last_date = df["date"].max()
+    invest_dates = pd.date_range(start=first_date, end=last_date, freq=f"{days_offset}D")
+    invest_dates_set = {d.date() for d in invest_dates}
+
+    rows = []
+    total_shares = 0.0
+    total_invested = 0.0
+    cash_buffer = 0.0
+
+    for i, row in df.iterrows():
+        d = row["date"]
+        if isinstance(d, pd.Timestamp):
+            d = d.date()
+        price = row["close"]
+        if pd.isna(price) or price <= 0:
+            continue
+
+        if d in invest_dates_set:
+            multiplier = 1.0
+            rsi = row.get("rsi", np.nan)
+            above_sma = row.get("above_sma200", np.nan)
+
+            if pd.notna(rsi):
+                if rsi < 25:
+                    multiplier = 2.0
+                elif rsi < 35:
+                    multiplier = 1.5
+                elif rsi > 70:
+                    multiplier = 0.0
+                elif rsi > 60:
+                    multiplier = 0.5
+
+            if pd.notna(above_sma) and multiplier > 0:
+                if above_sma < 0.5:
+                    multiplier *= 1.2
+
+            invest = monthly_amount * multiplier + cash_buffer
+            if invest <= 0:
+                cash_buffer = -invest
+                invest = 0
+            if invest > 0:
+                shares_bought = invest / price
+                total_shares += shares_bought
+                total_invested += monthly_amount * multiplier
+                cash_buffer = invest - shares_bought * price
+
+        portfolio_value = total_shares * price
+        rows.append({
+            "date": d, "price": price, "total_shares": total_shares,
+            "total_invested": total_invested, "portfolio_value": portfolio_value,
+            "cash_buffer": cash_buffer,
+            "pnl": portfolio_value - total_invested,
+            "pnl_pct": (portfolio_value - total_invested) / total_invested if total_invested > 0 else 0.0,
+        })
+
+    return pd.DataFrame(rows)
+
+
+def backtest_compare_methods(
+    ticker: str,
+    monthly_amount: float = INVESTMENT_DEFAULTS["monthly_amount"],
+    frequency: str = INVESTMENT_DEFAULTS["frequency"],
+    start_date: str = INVESTMENT_DEFAULTS["start_date"],
+    end_date: str | None = None,
+) -> tuple[pd.DataFrame, dict]:
+    log.info("Backtesting methods for %s", ticker)
+    prices = _fetch_prices(ticker, start_date, end_date)
+    if prices.empty:
+        return pd.DataFrame(), {}
+
+    fundamentals = _load_fundamentals(ticker)
+    methods = {
+        "fixed": simulate_dca(prices, monthly_amount, frequency),
+        "cycle": simulate_cycle_dca(prices, monthly_amount, frequency),
+    }
+    value_dca = simulate_value_dca(prices, fundamentals, monthly_amount, frequency)
+    if not value_dca.empty:
+        methods["value"] = value_dca
+
+    results = []
+    histories = {}
+    for name, dca in methods.items():
+        if dca.empty:
+            continue
+        m = compute_metrics(dca["portfolio_value"], dca["total_invested"].iloc[-1], dca["portfolio_value"].iloc[-1])
+        histories[name] = dca
+        results.append({
+            "method": name,
+            "label": _METHODS.get(name, name),
+            "total_invested": m["total_invested"],
+            "final_value": m["final_value"],
+            "total_return": m["total_return"],
+            "cagr": m["cagr"],
+            "sharpe": m["sharpe"],
+            "max_dd": m["max_drawdown"],
+        })
+
+    return pd.DataFrame(results).sort_values("cagr", ascending=False), histories
+
+
+def backtest_compare_all(
+    tickers: list[str] | None = None,
+    monthly_amount: float = INVESTMENT_DEFAULTS["monthly_amount"],
+    start_date: str = INVESTMENT_DEFAULTS["start_date"],
+    end_date: str | None = None,
+) -> pd.DataFrame:
+    if tickers is None:
+        tickers = VN30_TICKERS
+    rows = []
+    for t in tickers:
+        df, _ = backtest_compare_methods(t, monthly_amount, "monthly", start_date, end_date)
+        if df.empty:
+            continue
+        for _, r in df.iterrows():
+            rows.append({
+                "ticker": t,
+                "method": r["method"],
+                "label": r["label"],
+                "cagr": r["cagr"],
+                "sharpe": r["sharpe"],
+                "max_dd": r["max_dd"],
+                "final_value": r["final_value"],
+                "total_invested": r["total_invested"],
+            })
+
+    all_df = pd.DataFrame(rows)
+    if all_df.empty:
+        return all_df
+
+    summary = all_df.pivot_table(index="ticker", columns="method", values="cagr").reset_index()
+    summary.columns.name = None
+    if "fixed" in summary and "cycle" in summary:
+        summary["diff_cycle"] = summary["cycle"] - summary["fixed"]
+    if "value" in summary and "fixed" in summary:
+        summary["diff_value"] = summary["value"] - summary["fixed"]
+    summary = summary.sort_values("diff_cycle", ascending=False) if "diff_cycle" in summary.columns else summary
+
+    return summary
 
 
 def compute_metrics(series: pd.Series, total_invested: float, final_value: float) -> dict:
@@ -195,7 +487,9 @@ def backtest_multi(
         tickers = VN30_TICKERS
 
     results = []
-    for t in tickers:
+    for idx, t in enumerate(tickers):
+        if idx > 0:
+            time.sleep(0.5)
         res = backtest_tich_san(t, monthly_amount, frequency, start_date, end_date)
         if "error" not in res:
             m = res["metrics"]

@@ -8,14 +8,64 @@ _root = Path(__file__).resolve().parent.parent.parent.parent
 if str(_root) not in sys.path:
     sys.path.insert(0, str(_root))
 
+import logging
+
 import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
 import plotly.express as px
 
 from src.accumulation import backtest_tich_san, backtest_multi, backtest_compare_frequencies, INVESTMENT_DEFAULTS
-from src.data.universe import VN30_TICKERS
+from src.config import Config
+from src.data.collector import OHLCVCollector
+from src.data.universe import VN30_TICKERS, filter_quality, get_ticker_universe
+from src.data.validator import DataValidator
 from src.dashboard.style import CUSTOM_CSS
+from src.features.returns import ReturnFeatures
+from src.features.rs import RelativeStrength
+from src.features.volatility import ATR
+from src.features.volume import VolumeSurge
+from src.features.fundamental import add_fundamental_features
+from src.features.macro import add_macro_features
+
+log = logging.getLogger(__name__)
+
+
+def _generate_features_minimal() -> None:
+    try:
+        config = Config()
+        collector = OHLCVCollector(config)
+        validator = DataValidator()
+        universe = get_ticker_universe()
+        bm = collector.fetch("VNINDEX", days=365)
+        all_dfs = []
+        for ticker in universe:
+            df = collector.fetch(ticker, days=365)
+            df = filter_quality(df, ticker)
+            if df is not None:
+                errors = validator.validate(df)
+                if not errors:
+                    all_dfs.append(df)
+        ret = ReturnFeatures()
+        rs = RelativeStrength()
+        atr = ATR()
+        vol = VolumeSurge()
+        feature_dfs = []
+        for df in all_dfs:
+            df = ret.compute(df)
+            df = rs.compute(df, bm)
+            df = atr.compute(df)
+            df = vol.compute(df)
+            feature_dfs.append(df)
+        features = pd.concat(feature_dfs, ignore_index=True)
+        features = add_macro_features(features)
+        features = add_fundamental_features(features)
+        feat_path = _root / "data" / "processed" / "features.parquet"
+        feat_path.parent.mkdir(parents=True, exist_ok=True)
+        features.to_parquet(feat_path)
+        log.info("Generated features.parquet (%d rows)", len(features))
+    except Exception as e:
+        log.warning("Feature generation failed: %s", e)
 
 st.set_page_config(page_title="Tích Sản", page_icon="🏦", layout="wide")
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
@@ -220,6 +270,9 @@ if run_btn:
         try:
             from src.strategies.accumulation import AccumulationStrategy
             feat_path = _root / "data" / "processed" / "features.parquet"
+            if not feat_path.exists():
+                with st.spinner("Generating features (first time, ~2 min)..."):
+                    _generate_features_minimal()
             if feat_path.exists():
                 df_feat = pd.read_parquet(feat_path)
                 strat = AccumulationStrategy()
