@@ -14,7 +14,7 @@ import plotly.express as px
 
 from src.dashboard.style import CUSTOM_CSS
 
-st.set_page_config(page_title="Signal History", page_icon="📡", layout="wide")
+st.set_page_config(page_title="Xếp Hạng", page_icon="📡", layout="wide")
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
 
@@ -36,8 +36,8 @@ def load_data():
 
 
 st.markdown(
-    '<div class="main-header"><h1>Signal History</h1>'
-    '<div class="subtitle">All picks across all trading days</div></div>',
+    '<div class="main-header"><h1>Lịch Sử Tín Hiệu</h1>'
+    '<div class="subtitle">Các tín hiệu quá khứ với lợi nhuận vượt trội T+20</div></div>',
     unsafe_allow_html=True,
 )
 

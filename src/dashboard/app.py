@@ -59,7 +59,7 @@ cols = st.columns([3, 1])
 with cols[0]:
     st.markdown(
         '<div class="main-header"><h1>Edge Engine</h1>'
-        '<div class="subtitle">VN Stock Ranking — T+20 Outperformance</div></div>',
+        '<div class="subtitle">Xếp hạng cổ phiếu VN — Vượt trội T+20</div></div>',
         unsafe_allow_html=True,
     )
 with cols[1]:
@@ -73,7 +73,7 @@ with cols[1]:
 # === TODAY'S SIGNALS ===
 today_sigs = sigs[sigs["signal_date"] == str(date.today())] if not sigs.empty else pd.DataFrame()
 if not today_sigs.empty:
-    st.markdown('<div class="section-title">TODAY\'S TOP 3 PICKS</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">TOP 3 HÔM NAY</div>', unsafe_allow_html=True)
 
     tickers = []
     scores = []
@@ -108,7 +108,7 @@ else:
 
 
 # === KPI ROW ===
-st.markdown('<div class="section-title">PERFORMANCE OVERVIEW</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">TỔNG QUAN HIỆU SUẤT</div>', unsafe_allow_html=True)
 
 if perf is not None and not perf.empty:
     total_signals = int(perf["total_picks"].sum()) if "total_picks" in perf else len(perf)
@@ -139,7 +139,7 @@ else:
 
 
 # === REALTIME P&L TRACKING ===
-st.markdown('<div class="section-title">REALTIME P&L TRACKING</div>', unsafe_allow_html=True)
+st.markdown('<div class="section-title">THEO DÕI P&L THỰC TẾ</div>', unsafe_allow_html=True)
 
 try:
     from src.tracking.realtime import track_signal, get_signal_summary
@@ -209,7 +209,7 @@ except Exception as e:
     st.caption(f"P&L tracking unavailable: {e}")
 
 # === HISTORY TABLE ===
-st.markdown('<div class="section-title">RECENT SIGNALS</div>', unsafe_allow_html=True)
+st.markdown('<div class="section-title">TÍN HIỆU GẦN ĐÂY</div>', unsafe_allow_html=True)
 
 if not sigs.empty:
     display = sigs.sort_values(["signal_date", "rank"], ascending=[False, True]).head(30).copy()

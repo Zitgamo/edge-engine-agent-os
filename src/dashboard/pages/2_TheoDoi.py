@@ -15,7 +15,7 @@ import plotly.graph_objects as go
 
 from src.dashboard.style import CUSTOM_CSS
 
-st.set_page_config(page_title="Performance", page_icon="📊", layout="wide")
+st.set_page_config(page_title="Theo Dõi", page_icon="📊", layout="wide")
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
 
@@ -37,8 +37,8 @@ def load_data():
 
 
 st.markdown(
-    '<div class="main-header"><h1>Performance Analytics</h1>'
-    '<div class="subtitle">Real results tracked at T+20</div></div>',
+    '<div class="main-header"><h1>Phân Tích Hiệu Suất</h1>'
+    '<div class="subtitle">Kết quả thực tế theo dõi tại T+20</div></div>',
     unsafe_allow_html=True,
 )
 
