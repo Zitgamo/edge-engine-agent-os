@@ -85,6 +85,41 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+with st.expander("Huong dan su dung"):
+    st.markdown("""
+### 1. So Sanh
+So sanh nhieu ma cung luc theo phuong phap DCA co dinh.
+- CAGR = loi nhuan hang nam, Sharpe = hieu suat tren rui ro (>1 la tot), Max DD = sut giam toi da (canh nho cang an toan)
+- Ma co CAGR cao + Sharpe >1 + Max DD thap = ung vien tich san tot.
+- Bieu do: cot cang xanh cang tot.
+
+### 2. Chi Tiet
+Xem 1 ma cu the: chart portfolio value vs invested, bang lich su DCA.
+- Duong xanh: gia tri danh muc (tich luy theo thoi gian)
+- Duong do dut: tong tien da bo ra
+- Duong cam: gia co phieu (truc phai)
+- Bang cuoi: 24 thang gan nhat - xem gia mua, so luong, loi/lo tung ky.
+
+### 3. Tan Suat
+Cung so tien, cung ma - mua moi thang, moi quy, hay moi nam cho lai nhat?
+- Nhieu ma yearly thang (giam phi, tan dung tich luy dai), nhung monthly an toan hon neu thi truong bien dong manh.
+- Chon ma de xem chart so sanh.
+
+### 4. Xep Hang
+Bang xep hang co phieu theo tieu chi phu hop tich san: ROE cao, PE/PB thap, bien dong thap, tang truong deu.
+- Top 5 = nen uu tien mua
+- Dung de chon ma cho danh muc
+
+### 5. Danh Muc
+Quan ly danh muc thuc te: nhap so tien moi ky, he thong tu dong xep hang va mua vao top N ma.
+- Tin hieu:
+  - **Tich manh** - ma nay dang re (PE/PB thap) + xep hang cao -> mua nhieu hon (1.5x)
+  - **Tich deu** - mua luong binh thuong
+  - **Theo doi** - xep hang trung binh, chua mua them, nhung giu
+  - **Ngung/Thoat** - xep hang kem hoac qua dat -> ban ra hoac khong mua
+- Dashboard dau thang: nhap so tien, bam Run, doc tin hieu, mua theo huong dan.
+""")
+
 # Sidebar params
 with st.sidebar:
     st.markdown("### Thông số")
