@@ -91,7 +91,7 @@ with st.sidebar:
 if run_btn:
     tickers = [t.strip().upper() for t in ticker_input.split(",") if t.strip()]
 
-    tab1, tab2, tab3, tab4 = st.tabs(["So Sánh", "Chi Tiết", "Tần Suất", "Xếp Hạng"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["So Sánh", "Chi Tiết", "Tần Suất", "Xếp Hạng", "Danh Mục"])
 
     with tab1:
         st.markdown("### So sánh nhiều mã")
@@ -290,6 +290,76 @@ if run_btn:
                 st.info("Chưa có dữ liệu. Chạy pipeline trước để tạo features.")
         except Exception as e:
             st.info(f"Strategy ranking unavailable: {e}")
+
+    with tab5:
+        st.markdown("### Quản Lý Danh Mục Tích Sản")
+        st.caption("Theo dõi danh mục: xếp hạng động, tín hiệu tích lũy/giữ/ngừng theo từng mã")
+
+        feat_path = _root / "data" / "processed" / "features.parquet"
+        if not feat_path.exists():
+            with st.spinner("Generating features (first time, ~2 min)..."):
+                _generate_features_minimal()
+
+        if feat_path.exists():
+            with st.spinner("Phân tích danh mục..."):
+                try:
+                    from src.accumulation import compute_ranking_history, simulate_dca_portfolio, summarize_portfolio, _fetch_prices
+                    df_feat = pd.read_parquet(feat_path)
+                    rank_hist = compute_ranking_history(df_feat)
+                    top_tickers = rank_hist[rank_hist["in_top_5"]]["ticker"].unique()[:12]
+                    prices = {}
+                    for t in top_tickers:
+                        df = _fetch_prices(t, start_date=start.isoformat() if start else "2025-07-01")
+                        if not df.empty:
+                            prices[t] = df
+                    port = simulate_dca_portfolio(rank_hist, prices, monthly_amount=monthly, top_n=5)
+                    summary = summarize_portfolio(port)
+
+                    if summary:
+                        c1, c2, c3, c4, c5 = st.columns(5)
+                        c1.metric("Số mã nắm giữ", summary["holdings"])
+                        c2.metric("Tổng đầu tư", f"{summary['total_invested']:,.0f}")
+                        c3.metric("Giá trị danh mục", f"{summary['total_value']:,.0f}")
+                        c4.metric("Lời lỗ", f"{summary['pnl']:+,.0f}", delta=f"{summary['pnl_pct']*100:+.2f}%")
+                        c5.metric("CAGR", f"{summary['cagr']*100:+.2f}%")
+
+                        # Portfolio value chart
+                        hist = summary["history"]
+                        fig = go.Figure()
+                        fig.add_trace(go.Scatter(x=hist["date"], y=hist["total_value"], mode="lines",
+                            name="Portfolio Value", line=dict(color="#00C853", width=2), fill="tozeroy",
+                            fillcolor="rgba(0,200,83,0.08)"))
+                        fig.add_trace(go.Scatter(x=hist["date"], y=hist["total_invested"], mode="lines",
+                            name="Total Invested", line=dict(color="#FF5252", width=2, dash="dash")))
+                        fig.update_layout(title="Portfolio Value vs Invested",
+                            plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+                            font_color="#888", margin=dict(l=0, r=0, t=30, b=0),
+                            hovermode="x unified", height=350,
+                            yaxis=dict(title="VND", tickformat=",.0f"),
+                            legend=dict(orientation="h", y=1.1))
+                        fig.update_xaxes(gridcolor="#1A1D29")
+                        fig.update_yaxes(gridcolor="#1A1D29")
+                        st.plotly_chart(fig, use_container_width=True)
+
+                        # Holdings table
+                        st.markdown("### Chi tiết danh mục hiện tại")
+                        latest = port[port["date"] == port["date"].max()].copy()
+                        latest_display = latest[["ticker", "signal", "shares", "cost_basis", "value", "pnl", "pnl_pct"]].copy()
+                        latest_display["signal"] = latest_display["signal"].apply(lambda x: {"ACCUMULATE": "+ Tích lũy mạnh", "NORMAL": "= Tích lũy", "WATCH": "? Theo dõi", "EXIT": "! Ngừng/Thoát", "BUY": "+ Mua mới", "HOLD": "- Giữ"}.get(x, x))
+                        latest_display["shares"] = latest_display["shares"].apply(lambda x: f"{x:,.1f}")
+                        latest_display["cost_basis"] = latest_display["cost_basis"].apply(lambda x: f"{x:,.0f}")
+                        latest_display["value"] = latest_display["value"].apply(lambda x: f"{x:,.0f}")
+                        latest_display["pnl"] = latest_display["pnl"].apply(lambda x: f"{x:+,.0f}")
+                        latest_display["pnl_pct"] = latest_display["pnl_pct"].apply(lambda x: f"{x:+.2%}")
+                        latest_display = latest_display.rename(columns={
+                            "ticker": "Mã", "signal": "Tín hiệu", "shares": "Số lượng",
+                            "cost_basis": "Giá vốn", "value": "Giá trị", "pnl": "Lời lỗ", "pnl_pct": "Lời lỗ %",
+                        })
+                        st.dataframe(latest_display, use_container_width=True, hide_index=True)
+                    else:
+                        st.info("Không đủ dữ liệu để phân tích danh mục")
+                except Exception as e:
+                    st.info(f"Portfolio analysis unavailable: {e}")
 
 else:
     st.info("Điều chỉnh thông số bên sidebar và nhấn **Chạy Backtest**")

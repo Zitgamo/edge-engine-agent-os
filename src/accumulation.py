@@ -557,6 +557,195 @@ def backtest_compare_frequencies(
     return pd.DataFrame(results), histories
 
 
+def compute_ranking_history(
+    features: pd.DataFrame,
+    top_n: int = 5,
+) -> pd.DataFrame:
+    """Compute AccumulationStrategy ranking for every historical date."""
+    from src.strategies.accumulation import AccumulationStrategy
+    strat = AccumulationStrategy()
+    dates = sorted(features["date"].unique())
+    rows = []
+    for d in dates:
+        day_df = features[features["date"] == d].copy()
+        try:
+            ranking = strat.rank(day_df)
+            if ranking.empty:
+                continue
+            ranking = ranking.reset_index(drop=True)
+            for _, r in ranking.iterrows():
+                rnk = int(r["rank"])
+                rows.append({
+                    "date": d,
+                    "ticker": r["ticker"],
+                    "rank": rnk,
+                    "score": r["score"],
+                    "in_top_3": rnk <= 3,
+                    "in_top_5": rnk <= 5,
+                    "in_top_10": rnk <= 10,
+                })
+        except Exception:
+            continue
+    df = pd.DataFrame(rows)
+    return df.sort_values(["date", "rank"]).reset_index(drop=True)
+
+
+def simulate_dca_portfolio(
+    ranking_history: pd.DataFrame,
+    prices: dict[str, pd.DataFrame],
+    monthly_amount: float = 10_000_000,
+    top_n: int = 5,
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> pd.DataFrame:
+    """Dynamic DCA: each month invest in top N ranked stocks, track P&L."""
+    if ranking_history.empty:
+        return pd.DataFrame()
+
+    rh = ranking_history.copy()
+    rh["date"] = pd.to_datetime(rh["date"])
+    if start_date:
+        rh = rh[rh["date"] >= pd.to_datetime(start_date)]
+    if end_date:
+        rh = rh[rh["date"] <= pd.to_datetime(end_date)]
+    if rh.empty:
+        return pd.DataFrame()
+
+    invest_dates = sorted(rh["date"].unique())
+    portfolio: dict[str, dict] = {}  # ticker -> shares, cost, invested
+    rows = []
+
+    for d in invest_dates:
+        day_rank = rh[rh["date"] == d].sort_values("rank")
+        top_tickers = set(day_rank.head(top_n)["ticker"].tolist())
+
+        # Decide actions for current holdings
+        for ticker in list(portfolio.keys()):
+            h = portfolio[ticker]
+            rank_row = day_rank[day_rank["ticker"] == ticker]
+            if rank_row.empty:
+                signal = "EXIT"
+            else:
+                r = rank_row.iloc[0]["rank"]
+                if r <= top_n:
+                    signal = "ACCUMULATE" if r <= 3 else "NORMAL"
+                elif r <= top_n * 2:
+                    signal = "WATCH"
+                else:
+                    signal = "EXIT"
+            h["signal"] = signal
+
+        # Invest in top N
+        invest_amount = monthly_amount / top_n
+        for ticker in top_tickers:
+            price_data = prices.get(ticker)
+            if price_data is None or price_data.empty:
+                continue
+            price_row = price_data[price_data["date"] == d]
+            if price_row.empty:
+                continue
+            price = price_row.iloc[0]["close"]
+            if pd.isna(price) or price <= 0:
+                continue
+
+            if ticker not in portfolio:
+                portfolio[ticker] = {"shares": 0.0, "cost": 0.0, "invested": 0.0, "signal": "BUY"}
+
+            h = portfolio[ticker]
+            mult = 1.5 if h.get("signal") == "ACCUMULATE" else 1.0
+            invest = invest_amount * mult
+            shares_bought = invest / price
+            h["shares"] += shares_bought
+            h["invested"] += invest
+            h["cost"] = h["invested"] / h["shares"] if h["shares"] > 0 else 0
+
+        # Calculate daily P&L
+        total_invested = 0.0
+        total_value = 0.0
+        for ticker, h in portfolio.items():
+            price_data = prices.get(ticker)
+            val = 0.0
+            if price_data is not None and not price_data.empty:
+                pr = price_data[price_data["date"] == d]
+                if not pr.empty:
+                    px = pr.iloc[0]["close"]
+                    if pd.notna(px) and px > 0:
+                        val = h["shares"] * px
+            total_invested += h["invested"]
+            total_value += val
+            pnl = val - h["invested"]
+            pnl_pct = pnl / h["invested"] if h["invested"] > 0 else 0.0
+            rows.append({
+                "date": d,
+                "ticker": ticker,
+                "shares": round(h["shares"], 2),
+                "invested": h["invested"],
+                "value": val,
+                "pnl": pnl,
+                "pnl_pct": pnl_pct,
+                "signal": h.get("signal", "HOLD"),
+                "cost_basis": round(h["cost"], 0) if h["cost"] > 0 else 0,
+            })
+
+    return pd.DataFrame(rows)
+
+
+def summarize_portfolio(
+    portfolio_df: pd.DataFrame,
+) -> dict:
+    """Aggregate portfolio summary by date."""
+    if portfolio_df.empty:
+        return {}
+    by_date = portfolio_df.groupby("date").agg(
+        total_invested=("invested", "sum"),
+        total_value=("value", "sum"),
+        holdings=("ticker", "nunique"),
+    ).reset_index()
+    by_date["pnl"] = by_date["total_value"] - by_date["total_invested"]
+    by_date["pnl_pct"] = by_date["pnl"] / by_date["total_invested"].replace(0, np.nan)
+    last = by_date.iloc[-1]
+    first = by_date.iloc[0]
+    years = (by_date["date"].max() - by_date["date"].min()).days / 365.25
+    total_ret = last["pnl_pct"]
+    cagr = (last["total_value"] / last["total_invested"]) ** (1 / years) - 1 if years > 0 and last["total_invested"] > 0 else 0.0
+    return {
+        "total_invested": last["total_invested"],
+        "total_value": last["total_value"],
+        "pnl": last["pnl"],
+        "pnl_pct": last["pnl_pct"],
+        "cagr": cagr,
+        "holdings": last["holdings"],
+        "years": round(years, 1),
+        "history": by_date,
+    }
+
+
+def print_portfolio(portfolio_df: pd.DataFrame) -> None:
+    summary = summarize_portfolio(portfolio_df)
+    if not summary:
+        print("  No portfolio data")
+        return
+
+    print(f"\n{'='*60}")
+    print(f"  DANH MUC TICH SAN")
+    print(f"  Period: {summary['history']['date'].min().date()} -> {summary['history']['date'].max().date()} ({summary['years']} years)")
+    print(f"{'='*60}")
+    print(f"  Holdings:        {summary['holdings']}")
+    print(f"  Total invested:  {summary['total_invested']:>12,.0f} VND")
+    print(f"  Portfolio value: {summary['total_value']:>12,.0f} VND")
+    print(f"  P&L:             {summary['pnl']:>+12,.0f} VND ({summary['pnl_pct']*100:+.2f}%)")
+    print(f"  CAGR:            {summary['cagr']*100:+.2f}%")
+    print(f"{'='*60}")
+
+    latest = portfolio_df[portfolio_df["date"] == portfolio_df["date"].max()]
+    print(f"\n  {'Ticker':<8} {'Signal':<12} {'Shares':>8} {'Cost':>10} {'Value':>10} {'P&L':>10} {'P&L%':>8}")
+    print(f"  {'-'*68}")
+    for _, r in latest.iterrows():
+        signal = r['signal']
+        sig_icon = {'ACCUMULATE': '+', 'NORMAL': '=', 'WATCH': '?', 'EXIT': '!', 'BUY': '+', 'HOLD': '-', 'SELL': 'v'}.get(signal, ' ')
+        print(f"  {r['ticker']:<8} {sig_icon} {signal:<10} {r['shares']:>8.1f} {r['cost_basis']:>10,.0f} {r['value']:>10,.0f} {r['pnl']:>+10,.0f} {r['pnl_pct']*100:>+7.2f}%")
+
+
 def print_report(result: dict) -> None:
     sys_stdout = __import__("sys").stdout
     if hasattr(sys_stdout, "reconfigure"):
