@@ -85,39 +85,39 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-with st.expander("Huong dan su dung"):
+with st.expander("Hướng dẫn sử dụng"):
     st.markdown("""
-### 1. So Sanh
-So sanh nhieu ma cung luc theo phuong phap DCA co dinh.
-- CAGR = loi nhuan hang nam, Sharpe = hieu suat tren rui ro (>1 la tot), Max DD = sut giam toi da (canh nho cang an toan)
-- Ma co CAGR cao + Sharpe >1 + Max DD thap = ung vien tich san tot.
-- Bieu do: cot cang xanh cang tot.
+### 1. So Sánh
+So sánh nhiều mã cùng lúc theo phương pháp DCA cố định.
+- **Cột nào xem?** `CAGR` (lợi nhuận/năm), `Sharpe` (hiệu suất trên rủi ro, >1 là tốt), `Max DD` (sụt giảm tối đa, càng nhỏ càng an toàn)
+- **Cách đọc:** Mã có CAGR cao + Sharpe >1 + Max DD thấp = ứng viên tích sản tốt.
+- **Biểu đồ:** Cột càng xanh càng tốt.
 
-### 2. Chi Tiet
-Xem 1 ma cu the: chart portfolio value vs invested, bang lich su DCA.
-- Duong xanh: gia tri danh muc (tich luy theo thoi gian)
-- Duong do dut: tong tien da bo ra
-- Duong cam: gia co phieu (truc phai)
-- Bang cuoi: 24 thang gan nhat - xem gia mua, so luong, loi/lo tung ky.
+### 2. Chi Tiết
+Xem 1 mã cụ thể: chart portfolio value vs invested, bảng lịch sử DCA.
+- **Đường xanh:** giá trị danh mục (tích lũy theo thời gian)
+- **Đường đỏ đứt:** tổng tiền đã bỏ ra
+- **Đường cam:** giá cổ phiếu (trục phải)
+- **Bảng cuối:** 24 tháng gần nhất — xem giá mua, số lượng, lời/lỗ từng kỳ.
 
-### 3. Tan Suat
-Cung so tien, cung ma - mua moi thang, moi quy, hay moi nam cho lai nhat?
-- Nhieu ma yearly thang (giam phi, tan dung tich luy dai), nhung monthly an toan hon neu thi truong bien dong manh.
-- Chon ma de xem chart so sanh.
+### 3. Tần Suất
+Cùng số tiền, cùng mã — mua mỗi tháng, mỗi quý, hay mỗi năm cho lãi nhất?
+- Nhiều mã **yearly** thắng (giảm phí, tận dụng tích lũy dài), nhưng **monthly** an toàn hơn nếu thị trường biến động mạnh.
+- Chọn mã để xem chart so sánh.
 
-### 4. Xep Hang
-Bang xep hang co phieu theo tieu chi phu hop tich san: ROE cao, PE/PB thap, bien dong thap, tang truong deu.
-- Top 5 = nen uu tien mua
-- Dung de chon ma cho danh muc
+### 4. Xếp Hạng
+Bảng xếp hạng cổ phiếu theo tiêu chí phù hợp tích sản: **ROE cao, PE/PB thấp, biến động thấp, tăng trưởng đều**.
+- **Top 5** = nên ưu tiên mua
+- Dùng để chọn mã cho danh mục
 
-### 5. Danh Muc
-Quan ly danh muc thuc te: nhap so tien moi ky, he thong tu dong xep hang va mua vao top N ma.
-- Tin hieu:
-  - **Tich manh** - ma nay dang re (PE/PB thap) + xep hang cao -> mua nhieu hon (1.5x)
-  - **Tich deu** - mua luong binh thuong
-  - **Theo doi** - xep hang trung binh, chua mua them, nhung giu
-  - **Ngung/Thoat** - xep hang kem hoac qua dat -> ban ra hoac khong mua
-- Dashboard dau thang: nhap so tien, bam Run, doc tin hieu, mua theo huong dan.
+### 5. Danh Mục
+Quản lý danh mục thực tế: nhập số tiền mỗi kỳ, hệ thống tự động xếp hạng và mua vào top N mã.
+- **Tín hiệu:**
+  - **Tích mạnh** — mã này đang rẻ (PE/PB thấp) + xếp hạng cao → mua nhiều hơn (1.5x)
+  - **Tích đều** — mua lượng bình thường
+  - **Theo dõi** — xếp hạng trung bình, chưa mua thêm, nhưng giữ
+  - **Ngừng/Thoát** — xếp hạng kém hoặc quá đắt → bán ra hoặc không mua
+- **Dashboard đầu tháng:** nhập số tiền, bấm Run, đọc tín hiệu, mua theo hướng dẫn.
 """)
 
 # Sidebar params

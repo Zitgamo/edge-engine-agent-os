@@ -15,7 +15,7 @@ log = logging.getLogger(__name__)
 
 
 def load_stock_data(ticker: str, data_dir: str | None = None) -> pd.DataFrame | None:
-    """Load raw OHLCV data for a ticker — parquet only, no yfinance fallback to keep data consistent."""
+    """Load raw OHLCV data for a ticker — parquet first, yfinance fallback."""
     if data_dir is None:
         data_dir = str(Config.raw_data_dir)
     pattern = os.path.join(data_dir, f"{ticker}_raw.parquet")
@@ -27,6 +27,23 @@ def load_stock_data(ticker: str, data_dir: str | None = None) -> pd.DataFrame | 
             return df
         except Exception as e:
             log.warning("Cannot load parquet %s: %s", ticker, e)
+    import yfinance as yf
+    try:
+        t = yf.Ticker(f"{ticker}.VN")
+        df = t.history(period="6mo")
+        if df.empty:
+            return None
+        df = df.reset_index()
+        df["ticker"] = ticker
+        df = df.rename(columns={
+            "Date": "date", "Open": "open", "High": "high",
+            "Low": "low", "Close": "close", "Volume": "volume",
+        })
+        df["date"] = pd.to_datetime(df["date"]).dt.tz_localize(None)
+        df = df.sort_values("date").reset_index(drop=True)
+        return df
+    except Exception as e:
+        log.warning("yfinance fallback failed for %s: %s", ticker, e)
     return None
 
 
