@@ -194,6 +194,82 @@ def auto_retrain() -> dict[str, float]:
     return {"old_accuracy": old_acc, "new_accuracy": new_acc, "improvement": improvement}
 
 
+def backtest_score_validation(min_train_dates: int = 60) -> None:
+    """Walk-forward: compare top 3 vs bottom 3 by score using T+5 excess return."""
+    df = pd.read_parquet("data/processed/features.parquet")
+    df = df.dropna(subset=FEATURE_COLS + ["excess_return_5d"]).sort_values("date")
+    dates = sorted(df["date"].unique())
+
+    if len(dates) < min_train_dates + 10:
+        print(f"Not enough dates ({len(dates)}) for walk-forward")
+        return
+
+    top_results: list[float] = []
+    bot_results: list[float] = []
+    spread_results: list[float] = []
+
+    for i in range(min_train_dates, len(dates)):
+        train_end = dates[i - 1]
+        test_date = dates[i]
+
+        train = df[df["date"] <= train_end]
+        test = df[df["date"] == test_date]
+
+        if len(train) < 100 or len(test) < 10:
+            continue
+
+        model = xgb.XGBClassifier(
+            n_estimators=200, max_depth=5, learning_rate=0.05,
+            subsample=0.8, colsample_bytree=0.8, random_state=42, eval_metric="logloss",
+        )
+        train_clean = train.dropna(subset=FEATURE_COLS + [TARGET_COL])
+        if len(train_clean) < 100:
+            continue
+
+        try:
+            model.fit(train_clean[FEATURE_COLS], train_clean[TARGET_COL], verbose=False)
+        except Exception:
+            continue
+
+        test_X = test[FEATURE_COLS].fillna(0)
+        test = test.copy()
+        test["score"] = model.predict_proba(test_X)[:, 1]
+        test = test.sort_values("score", ascending=False)
+
+        top3 = test.head(3)
+        bot3 = test.tail(3)
+
+        top_ret = top3["excess_return_5d"].mean()
+        bot_ret = bot3["excess_return_5d"].mean()
+
+        top_results.append(top_ret)
+        bot_results.append(bot_ret)
+        spread_results.append(top_ret - bot_ret)
+
+    if len(top_results) < 10:
+        print(f"Not enough test days ({len(top_results)})")
+        return
+
+    top_ret = pd.Series(top_results)
+    bot_ret = pd.Series(bot_results)
+    spread = pd.Series(spread_results)
+
+    print("\n" + "=" * 75)
+    print("  WALK-FORWARD BACKTEST: TOP 3 vs BOTTOM 3 (T+5 excess return)")
+    print("=" * 75)
+    print(f"  Test days:     {len(top_results)}")
+    print(f"  Train window:  rolling, min {min_train_dates} days")
+    print()
+    print(f"  {'Metric':<25} {'Top 3':>12} {'Bottom 3':>12} {'Spread':>12}")
+    print(f"  {'-'*61}")
+    print(f"  {'Win Rate':<25} {top_ret.gt(0).mean():>11.1%} {bot_ret.gt(0).mean():>11.1%} {spread.gt(0).mean():>11.1%}")
+    print(f"  {'Avg Return':<25} {top_ret.mean():>+11.2%} {bot_ret.mean():>+11.2%} {spread.mean():>+11.2%}")
+    print(f"  {'Cum Return':<25} {(1+top_ret).prod()-1:>+11.2%} {(1+bot_ret).prod()-1:>+11.2%} {(1+spread).prod()-1:>+11.2%}")
+    print(f"  {'Sharpe (ann)':<25} {top_ret.mean()/top_ret.std()*np.sqrt(252):>+11.2f} {bot_ret.mean()/bot_ret.std()*np.sqrt(252):>+11.2f} {spread.mean()/spread.std()*np.sqrt(252):>+11.2f}")
+    print(f"  {'Max Drawdown':<25} {top_ret.min():>11.2%} {bot_ret.min():>11.2%} {spread.min():>11.2%}")
+    print()
+
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     print("\n=== STOP-LOSS / TAKE-PROFIT OPTIMIZATION ===\n")

@@ -18,6 +18,7 @@ def main() -> None:
         print("  backfill          Backfill actual T+20 performance")
         print("  summary           Show performance summary")
         print("  signal            Show latest signal")
+        print("  backtest-score    Walk-forward: top 3 vs bottom 3")
         print("  history           Show full history + tracker")
         print("  ceiling           Ceiling/floor context analysis for tickers")
         print("  telegram-test     Test Telegram notification")
@@ -170,6 +171,10 @@ def main() -> None:
         print("Telegram test:", "sent" if ok else "failed (not configured)")
         if not ok:
             print("Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in .env")
+
+    elif cmd == "backtest-score":
+        from src.backtest import backtest_score_validation
+        backtest_score_validation()
 
     elif cmd == "sync-cloud":
         from src.supabase_client import sync_all
