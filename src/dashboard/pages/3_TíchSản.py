@@ -309,7 +309,7 @@ if run_btn:
                     top_tickers = rank_hist[rank_hist["in_top_5"]]["ticker"].unique()[:12]
                     prices = {}
                     for t in top_tickers:
-                        df = _fetch_prices(t, start_date=start.isoformat() if start else "2025-07-01")
+                        df = _fetch_prices(t, start=start.isoformat() if start else "2025-07-01")
                         if not df.empty:
                             prices[t] = df
                     port = simulate_dca_portfolio(rank_hist, prices, monthly_amount=monthly, top_n=5)
