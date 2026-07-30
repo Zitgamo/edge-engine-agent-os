@@ -26,7 +26,7 @@ from src.features.returns import ReturnFeatures
 from src.features.rs import RelativeStrength
 from src.features.volatility import ATR
 from src.features.volume import VolumeSurge
-from src.features.fundamental import add_fundamental_features, HistoricalFundamentalFeatures
+from src.features.fundamental import add_fundamental_features
 from src.features.macro import add_macro_features
 
 log = logging.getLogger(__name__)
