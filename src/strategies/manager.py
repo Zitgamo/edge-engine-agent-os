@@ -16,6 +16,7 @@ from src.strategies.momentum import MomentumStrategy
 from src.strategies.breakout import BreakoutStrategy
 from src.strategies.rsi import RSIStrategy
 from src.strategies.defensive import DefensiveStrategy
+from src.strategies.accumulation import AccumulationStrategy
 
 log = logging.getLogger(__name__)
 
@@ -29,6 +30,8 @@ ENSEMBLE_STRATEGIES: list[Strategy] = [
     RSIStrategy(),
     DefensiveStrategy(),
 ]
+
+ALL_STRATEGIES: list[Strategy] = ENSEMBLE_STRATEGIES + [AccumulationStrategy()]
 
 
 class StrategyManager:

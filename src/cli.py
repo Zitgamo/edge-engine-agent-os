@@ -23,6 +23,7 @@ def main() -> None:
         print("  ceiling           Ceiling/floor context analysis for tickers")
         print("  telegram-test     Test Telegram notification")
         print("  sync-cloud        Sync local SQLite data to Supabase")
+        print("  accumulation      Tích sản backtest (use: accumulation HPG or accumulation all)")
         return
 
     cmd = sys.argv[1]
@@ -177,6 +178,17 @@ def main() -> None:
     elif cmd == "backtest-score":
         from src.backtest import backtest_score_validation
         backtest_score_validation()
+
+    elif cmd == "accumulation":
+        from src.backtest.accumulation import backtest_tich_san, backtest_multi, print_report
+        if len(sys.argv) > 2 and sys.argv[2] == "all":
+            df = backtest_multi(top_n=10)
+            print(f"\nTop 10 by CAGR:")
+            print(df.head(10).to_string(index=False))
+        else:
+            ticker = sys.argv[2] if len(sys.argv) > 2 else "HPG"
+            result = backtest_tich_san(ticker)
+            print_report(result)
 
     elif cmd == "sync-cloud":
         from src.supabase_client import sync_all

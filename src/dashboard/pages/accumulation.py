@@ -1,0 +1,192 @@
+from __future__ import annotations
+
+import os
+import sys
+from pathlib import Path
+
+_root = Path(__file__).resolve().parent.parent.parent.parent
+if str(_root) not in sys.path:
+    sys.path.insert(0, str(_root))
+
+import pandas as pd
+import streamlit as st
+import plotly.graph_objects as go
+import plotly.express as px
+
+from src.backtest.accumulation import backtest_tich_san, backtest_multi, INVESTMENT_DEFAULTS
+from src.data.universe import VN30_TICKERS
+from src.dashboard.style import CUSTOM_CSS
+
+st.set_page_config(page_title="Tích Sản", page_icon="🏦", layout="wide")
+st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
+
+st.markdown(
+    '<div class="main-header"><h1>Tích Sản — DCA Backtest</h1>'
+    '<div class="subtitle">Long-term accumulation simulation: monthly DCA into VN stocks</div></div>',
+    unsafe_allow_html=True,
+)
+
+# Sidebar params
+with st.sidebar:
+    st.markdown("### Parameters")
+    monthly = st.number_input("Monthly investment (VND)", min_value=1_000_000, value=10_000_000, step=1_000_000, format="%d")
+    freq = st.selectbox("Frequency", ["monthly", "quarterly"], index=0)
+    start = st.date_input("Start date", value=pd.to_datetime("2020-01-01"))
+    ticker_input = st.text_input("Ticker (comma-separated)", value="HPG, FPT, VNM, ACB, VCB")
+    run_btn = st.button("Run Backtest", type="primary")
+
+if run_btn:
+    tickers = [t.strip().upper() for t in ticker_input.split(",") if t.strip()]
+
+    tab1, tab2, tab3 = st.tabs(["Comparison", "Detail", "Strategy Rank"])
+
+    with tab1:
+        st.markdown("### Multi-stock comparison")
+        with st.spinner(f"Backtesting {len(tickers)} tickers..."):
+            df = backtest_multi(
+                tickers=tickers,
+                monthly_amount=monthly,
+                frequency=freq,
+                start_date=start.isoformat(),
+            )
+
+        if not df.empty:
+            df_display = df.copy()
+            df_display["total_return"] = df_display["total_return"].apply(lambda x: f"{x:+.2%}")
+            df_display["cagr"] = df_display["cagr"].apply(lambda x: f"{x:+.2%}")
+            df_display["sharpe"] = df_display["sharpe"].apply(lambda x: f"{x:.2f}")
+            df_display["max_dd"] = df_display["max_dd"].apply(lambda x: f"{x:.2%}")
+            df_display["active_return"] = df_display["active_return"].apply(lambda x: f"{x:+.2%}")
+            df_display["final_value"] = df_display["final_value"].apply(lambda x: f"{x:,.0f}")
+            df_display["total_invested"] = df_display["total_invested"].apply(lambda x: f"{x:,.0f}")
+            df_display = df_display.rename(columns={
+                "ticker": "Ticker", "total_return": "Total Return", "cagr": "CAGR",
+                "sharpe": "Sharpe", "max_dd": "Max DD", "final_value": "Final",
+                "total_invested": "Invested", "years": "Years", "active_return": "Active Ret",
+            })
+            st.dataframe(df_display, use_container_width=True, hide_index=True)
+
+            # CAGR bar chart
+            df_plot = df.copy().head(10)
+            fig = px.bar(
+                df_plot, x="ticker", y="cagr",
+                title="CAGR by ticker",
+                labels={"ticker": "", "cagr": "CAGR"},
+                color="cagr",
+                color_continuous_scale=["#FF5252", "#FFA726", "#00C853"],
+                height=350,
+            )
+            fig.update_layout(
+                plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+                font_color="#888", margin=dict(l=0, r=0, t=30, b=0),
+                yaxis_tickformat=".0%",
+            )
+            fig.update_xaxes(gridcolor="#1A1D29")
+            fig.update_yaxes(gridcolor="#1A1D29")
+            st.plotly_chart(fig, use_container_width=True)
+
+    with tab2:
+        st.markdown("### Single stock detail")
+        detail_ticker = st.selectbox("Select ticker", tickers if tickers else ["HPG"])
+        with st.spinner(f"Backtesting {detail_ticker}..."):
+            result = backtest_tich_san(
+                ticker=detail_ticker,
+                monthly_amount=monthly,
+                frequency=freq,
+                start_date=start.isoformat(),
+            )
+
+        if "error" not in result:
+            m = result["metrics"]
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Total Return", f"{m['total_return']:+.2%}")
+            c2.metric("CAGR", f"{m['cagr']:+.2%}")
+            c3.metric("Sharpe", f"{m['sharpe']:.2f}")
+            c4.metric("Max DD", f"{m['max_drawdown']:.2%}")
+
+            c5, c6, c7, c8 = st.columns(4)
+            c5.metric("Invested", f"{m['total_invested']:,.0f}")
+            c6.metric("Final Value", f"{m['final_value']:,.0f}")
+            c7.metric("Active Return", f"{m.get('active_return', 0):+.2%}")
+            c8.metric("Price Change", f"{result['price_change']:+.2%}")
+
+            # Portfolio value chart
+            dca_df = result["dca_history"]
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(
+                x=dca_df["date"], y=dca_df["portfolio_value"],
+                mode="lines", name="Portfolio Value",
+                line=dict(color="#00C853", width=2),
+                fill="tozeroy", fillcolor="rgba(0,200,83,0.08)",
+            ))
+            fig.add_trace(go.Scatter(
+                x=dca_df["date"], y=dca_df["total_invested"],
+                mode="lines", name="Total Invested",
+                line=dict(color="#FF5252", width=2, dash="dash"),
+            ))
+            fig.add_trace(go.Scatter(
+                x=dca_df["date"], y=dca_df["price"],
+                mode="lines", name="Stock Price",
+                line=dict(color="#FFA726", width=1),
+                yaxis="y2",
+            ))
+            fig.update_layout(
+                title=f"{detail_ticker} DCA Portfolio",
+                plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+                font_color="#888", margin=dict(l=0, r=0, t=30, b=0),
+                hovermode="x unified", height=400,
+                yaxis=dict(title="Portfolio Value", tickformat=",.0f"),
+                yaxis2=dict(
+                    title="Price", overlaying="y", side="right", tickformat=",.0f",
+                    showgrid=False,
+                ),
+                legend=dict(orientation="h", y=1.1),
+            )
+            fig.update_xaxes(gridcolor="#1A1D29")
+            fig.update_yaxes(gridcolor="#1A1D29")
+            st.plotly_chart(fig, use_container_width=True)
+
+            # DCA history table
+            st.markdown("### DCA History (last 24 months)")
+            dca_display = dca_df.tail(24).copy()
+            dca_display["date"] = pd.to_datetime(dca_display["date"]).dt.strftime("%Y-%m-%d")
+            dca_display["price"] = dca_display["price"].apply(lambda x: f"{x:,.0f}")
+            dca_display["total_shares"] = dca_display["total_shares"].apply(lambda x: f"{x:.1f}")
+            dca_display["total_invested"] = dca_display["total_invested"].apply(lambda x: f"{x:,.0f}")
+            dca_display["portfolio_value"] = dca_display["portfolio_value"].apply(lambda x: f"{x:,.0f}")
+            dca_display["pnl_pct"] = dca_display["pnl_pct"].apply(lambda x: f"{x:+.2%}")
+            dca_display = dca_display.rename(columns={
+                "date": "Date", "price": "Price", "total_shares": "Shares",
+                "total_invested": "Invested", "portfolio_value": "Value",
+                "pnl_pct": "P&L",
+            })
+            st.dataframe(dca_display[["Date", "Price", "Shares", "Invested", "Value", "P&L"]],
+                        use_container_width=True, hide_index=True)
+        else:
+            st.error(f"No data for {detail_ticker}")
+
+    with tab3:
+        st.markdown("### Accumulation Strategy Ranking")
+        st.caption("Stocks ranked by tích sản criteria: high ROE, low PE/PB, stable growth, low volatility")
+        try:
+            from src.strategies.accumulation import AccumulationStrategy
+            from src.data.storage import PriceStorage
+            from src.config import Config
+            storage = PriceStorage(Config())
+            df_feat = storage.load_processed("features.parquet")
+            if df_feat.empty:
+                st.info("Run pipeline first to generate features")
+            else:
+                strat = AccumulationStrategy()
+                ranking = strat.rank(df_feat)
+                if not ranking.empty:
+                    top = ranking.head(20)
+                    top["score"] = top["score"].apply(lambda x: f"{x:.4f}")
+                    st.dataframe(top, use_container_width=True, hide_index=True)
+                else:
+                    st.info("No ranking available")
+        except Exception as e:
+            st.info(f"Strategy ranking unavailable: {e}")
+
+else:
+    st.info("Adjust parameters in the sidebar and click **Run Backtest**")

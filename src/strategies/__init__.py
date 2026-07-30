@@ -8,5 +8,6 @@ from src.strategies.momentum import MomentumStrategy
 from src.strategies.breakout import BreakoutStrategy
 from src.strategies.rsi import RSIStrategy
 from src.strategies.defensive import DefensiveStrategy
+from src.strategies.accumulation import AccumulationStrategy
 
-__all__ = ["Strategy", "StrategyManager"]
+__all__ = ["Strategy", "StrategyManager", "AccumulationStrategy"]
