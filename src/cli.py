@@ -180,7 +180,7 @@ def main() -> None:
         backtest_score_validation()
 
     elif cmd == "accumulation":
-        from src.backtest.accumulation import backtest_tich_san, backtest_multi, print_report
+        from src.accumulation import backtest_tich_san, backtest_multi, print_report
         if len(sys.argv) > 2 and sys.argv[2] == "all":
             df = backtest_multi(top_n=10)
             print(f"\nTop 10 by CAGR:")

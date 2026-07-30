@@ -13,7 +13,7 @@ import streamlit as st
 import plotly.graph_objects as go
 import plotly.express as px
 
-from src.backtest.accumulation import backtest_tich_san, backtest_multi, backtest_compare_frequencies, INVESTMENT_DEFAULTS
+from src.accumulation import backtest_tich_san, backtest_multi, backtest_compare_frequencies, INVESTMENT_DEFAULTS
 from src.data.universe import VN30_TICKERS
 from src.dashboard.style import CUSTOM_CSS
 
