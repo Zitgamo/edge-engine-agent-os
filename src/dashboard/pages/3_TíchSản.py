@@ -9,6 +9,7 @@ if str(_root) not in sys.path:
     sys.path.insert(0, str(_root))
 
 import logging
+import time
 
 import pandas as pd
 import streamlit as st
@@ -18,7 +19,7 @@ import plotly.express as px
 from src.accumulation import backtest_tich_san, backtest_multi, backtest_compare_frequencies, INVESTMENT_DEFAULTS
 from src.config import Config
 from src.data.collector import OHLCVCollector
-from src.data.universe import VN30_TICKERS, filter_quality, get_ticker_universe
+from src.data.universe import VN30_TICKERS, filter_quality
 from src.data.validator import DataValidator
 from src.dashboard.style import CUSTOM_CSS
 from src.features.returns import ReturnFeatures
@@ -36,10 +37,12 @@ def _generate_features_minimal() -> None:
         config = Config()
         collector = OHLCVCollector(config)
         validator = DataValidator()
-        universe = get_ticker_universe()
         bm = collector.fetch("VNINDEX", days=365)
         all_dfs = []
-        for ticker in universe:
+        tickers = VN30_TICKERS + ["EIB", "LPB", "MSB", "OCB", "SHB", "VCI", "VND"]
+        for idx, ticker in enumerate(tickers):
+            if idx > 0:
+                time.sleep(0.3)
             df = collector.fetch(ticker, days=365)
             df = filter_quality(df, ticker)
             if df is not None:
@@ -63,7 +66,7 @@ def _generate_features_minimal() -> None:
         feat_path = _root / "data" / "processed" / "features.parquet"
         feat_path.parent.mkdir(parents=True, exist_ok=True)
         features.to_parquet(feat_path)
-        log.info("Generated features.parquet (%d rows)", len(features))
+        log.info("Generated features.parquet (%d rows, %d tickers)", len(features), len(all_dfs))
     except Exception as e:
         log.warning("Feature generation failed: %s", e)
 
