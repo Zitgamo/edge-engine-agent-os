@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import date
 
 import pandas as pd
 
@@ -25,7 +26,7 @@ class SignalGenerator:
         latest_date = ranking["date"].max()
         latest = ranking[ranking["date"] == latest_date].copy()
         top_n = latest[latest["rank"] <= n].copy()
-        top_n["signal_date"] = latest_date.strftime("%Y-%m-%d") if hasattr(latest_date, 'strftime') else str(latest_date)
+        top_n["signal_date"] = date.today().isoformat()
         top_n["action"] = "BUY"
 
         if weighted:
@@ -46,7 +47,7 @@ class SignalGenerator:
         else:
             top_n["ensemble_score"] = top_n["score"]
 
-        log.info("Top %d picks for %s: %s", n, latest_date.date() if hasattr(latest_date, 'date') else latest_date, list(top_n["ticker"]))
+        log.info("Top %d picks for %s: %s", n, date.today().isoformat(), list(top_n["ticker"]))
         if weighted:
             log.info("Weights: %s", dict(zip(top_n["ticker"], top_n["weight"])))
         return top_n[["signal_date", "date", "rank", "ticker", "score", "ensemble_score", "weight", "action", "stop_loss", "take_profit"]]
