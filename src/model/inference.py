@@ -10,15 +10,7 @@ from src.config import Config
 
 log = logging.getLogger(__name__)
 
-FEATURE_COLS = [
-    "return_5d", "return_20d", "return_60d",
-    "rs_5d", "rs_20d", "rs_60d",
-    "atr", "atr_pct",
-    "volume_surge", "volume_surge_flag",
-    "vndusd", "sbv_rate", "cpi_mom",
-    "pe_ratio", "pb_ratio", "roe", "rev_growth", "earn_growth",
-    "profit_margin", "debt_equity", "div_yield", "log_mcap", "forward_pe",
-]
+from src.model.schema import FEATURE_COLS
 
 
 class ModelInference:

@@ -8,7 +8,7 @@ load_dotenv()
 
 class Config:
     data_source: str = os.getenv("DATA_SOURCE", "yfinance")
-    model_path: Path = Path(os.getenv("MODEL_PATH", "models/xgboost_model.json"))
+    model_path: Path = Path(os.getenv("MODEL_PATH", "models/xgboost_model_h5.json"))
     dashboard_port: int = int(os.getenv("DASHBOARD_PORT", "8501"))
     log_level: str = os.getenv("LOG_LEVEL", "INFO")
     log_file: str = os.getenv("LOG_FILE", "logs/app.log")

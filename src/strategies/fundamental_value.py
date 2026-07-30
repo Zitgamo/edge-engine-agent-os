@@ -19,7 +19,7 @@ class FundamentalValueStrategy(Strategy):
 
         scores = pd.Series(0.0, index=latest.index)
         n_metrics = 4
-        weight = 1.0 / n_metrics
+        weight = 1.0 / max(n_metrics, 1)
 
         if "pe_ratio" in latest.columns:
             ranked = latest["pe_ratio"].rank(pct=True)

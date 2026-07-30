@@ -19,17 +19,19 @@ from src.features.volatility import ATR
 from src.features.volume import VolumeSurge
 from src.labels.outperformance import OutperformanceLabel
 from src.logging_setup import setup_logging
+from src.model.schema import FEATURE_COLS, ENSEMBLE_HORIZONS, XGBOOST_PARAMS, N_PICKS, HOLDING_PERIOD
 from src.model.evaluator import ModelEvaluator
-from src.model.trainer import FEATURE_COLS
+from src.model.trainer import ModelTrainer  # noqa: F401  (kept for backwards compat)
 from src.ranking.ranker import Ranker
 from src.ranking.signal import SignalGenerator
 
 log = logging.getLogger(__name__)
 
-ENSEMBLE_HORIZONS = [1, 5, 10, 20]
+# Re-export for any external consumers; canonical values live in src.model.schema
+ENSEMBLE_HORIZONS = ENSEMBLE_HORIZONS
 TRAIN_SPLIT = 0.8
-N_PICKS = 3
-HOLDING_PERIOD = 20
+N_PICKS = N_PICKS
+HOLDING_PERIOD = HOLDING_PERIOD
 STOP_LOSS = -0.03
 TAKE_PROFIT = 0.08
 
@@ -126,8 +128,7 @@ def run_pipeline(config: Config | None = None) -> None:
         target = f"outperform_{h}d"
         X_train = train[FEATURE_COLS]
         y_train = train[target]
-        model = xgb.XGBClassifier(n_estimators=200, max_depth=5, learning_rate=0.05,
-                                    subsample=0.8, colsample_bytree=0.8, random_state=42, eval_metric="logloss")
+        model = xgb.XGBClassifier(**XGBOOST_PARAMS)
         model.fit(X_train, y_train, verbose=False)
         ensemble_models[h] = model
         model.save_model(f"models/xgboost_model_h{h}.json")
@@ -148,8 +149,7 @@ def run_pipeline(config: Config | None = None) -> None:
         full = trainable[trainable[target].notna()]
         X_full = full[FEATURE_COLS]
         y_full = full[target]
-        model = xgb.XGBClassifier(n_estimators=200, max_depth=5, learning_rate=0.05,
-                                    subsample=0.8, colsample_bytree=0.8, random_state=42, eval_metric="logloss")
+        model = xgb.XGBClassifier(**XGBOOST_PARAMS)
         model.fit(X_full, y_full, verbose=False)
         ensemble_models[h] = model
         model.save_model(f"models/xgboost_model_h{h}.json")

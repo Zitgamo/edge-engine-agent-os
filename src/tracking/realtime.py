@@ -66,13 +66,14 @@ def simulate_holding(
 
     Returns:
     - status: 'ACTIVE' | 'HIT_SL' | 'HIT_TP' | 'EXPIRED' | 'NO_DATA'
-    - exit_price: price at exit (or current price if active)
+    - exit_price: price at exit (limit price for SL/TP hits, or current close if active)
     - exit_date: when it exited
     - pnl: P&L percentage
     - days_held: number of trading days held
     - high_during_hold: max price during holding
     - low_during_hold: min price during holding
     """
+    # SL checked before TP (conservative on wide-range days), exit at limit price not close
     dates = df["date"].dt.strftime("%Y-%m-%d").tolist() if hasattr(df["date"], "dt") else list(df["date"].astype(str))
 
     if signal_date not in dates:
@@ -113,18 +114,18 @@ def simulate_holding(
 
         status = "ACTIVE"
 
-        # Check TP first (price hit target)
-        if high >= tp_price:
-            exit_price = close
-            exit_date = current_date
-            status = "HIT_TP"
-            break
-
-        # Check SL
+        # Check SL first (conservative: assume worst case on wide-range days)
         if low <= sl_price:
-            exit_price = close
+            exit_price = sl_price
             exit_date = current_date
             status = "HIT_SL"
+            break
+
+        # Check TP (only if SL not hit)
+        if high >= tp_price:
+            exit_price = tp_price
+            exit_date = current_date
+            status = "HIT_TP"
             break
 
         # Still holding, update current price

@@ -33,7 +33,22 @@ class DataValidator:
 
         for col in ["open", "high", "low", "close"]:
             if col in df.columns and (df[col] <= 0).any():
-                errors.append(f"{col} column has non-positive values")
+                non_pos = int((df[col] <= 0).sum())
+                errors.append(f"{col} column has {non_pos} non-positive values")
+
+        # OHLC consistency: high >= low, high >= open/close, low <= open/close
+        if {"high", "low"}.issubset(df.columns):
+            if (df["high"] < df["low"]).any():
+                n = int((df["high"] < df["low"]).sum())
+                errors.append(f"{n} rows where high < low")
+        if {"high", "close"}.issubset(df.columns):
+            if (df["high"] < df["close"]).any():
+                n = int((df["high"] < df["close"]).sum())
+                errors.append(f"{n} rows where high < close")
+        if {"low", "close"}.issubset(df.columns):
+            if (df["low"] > df["close"]).any():
+                n = int((df["low"] > df["close"]).sum())
+                errors.append(f"{n} rows where low > close")
 
         if errors:
             log.warning("Validation errors: %s", errors)

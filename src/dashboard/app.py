@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import sys
 from pathlib import Path
@@ -7,6 +8,8 @@ from pathlib import Path
 _root = Path(__file__).resolve().parent.parent.parent
 if str(_root) not in sys.path:
     sys.path.insert(0, str(_root))
+
+log = logging.getLogger(__name__)
 
 import pandas as pd
 import streamlit as st
@@ -47,7 +50,8 @@ def load_overview():
             run_count = conn.execute("SELECT COUNT(*) FROM pipeline_runs").fetchone()[0]
             conn.close()
         return sigs, perf, run_count
-    except Exception:
+    except Exception as e:
+        log.exception("load_overview failed: %s", e)
         return pd.DataFrame(), pd.DataFrame(), 0
 
 

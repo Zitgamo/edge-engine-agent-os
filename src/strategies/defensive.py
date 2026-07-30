@@ -55,7 +55,7 @@ class DefensiveStrategy(Strategy):
             scores += ranked.fillna(0.5)
             n_metrics += 1
 
-        scores = scores / n_metrics
+        scores = scores / max(n_metrics, 1)
 
         latest["score"] = scores
         latest["ensemble_score"] = scores

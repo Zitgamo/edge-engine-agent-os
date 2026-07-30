@@ -10,7 +10,7 @@ import xgboost as xgb
 from src.config import Config
 from src.database import get_conn, init_db
 from src.model.inference import ModelInference
-from src.model.trainer import FEATURE_COLS, TARGET_COL
+from src.model.schema import FEATURE_COLS, TARGET_COL, XGBOOST_PARAMS
 
 log = logging.getLogger(__name__)
 
@@ -83,8 +83,7 @@ def train_ensemble_models() -> dict[int, xgb.XGBClassifier]:
             continue
         y = train[target]
         X = train[FEATURE_COLS]
-        model = xgb.XGBClassifier(n_estimators=200, max_depth=5, learning_rate=0.05,
-                                    subsample=0.8, colsample_bytree=0.8, random_state=42, eval_metric="logloss")
+        model = xgb.XGBClassifier(**XGBOOST_PARAMS)
         model.fit(X, y, verbose=False)
         models[h] = model
         model.save_model(f"models/xgboost_model_h{h}.json")
@@ -171,8 +170,7 @@ def auto_retrain() -> dict[str, float]:
     train = df[df["date"].isin(train_dates)]
     test = df[df["date"].isin(test_dates)]
 
-    model_new = xgb.XGBClassifier(n_estimators=200, max_depth=5, learning_rate=0.05,
-                                    subsample=0.8, colsample_bytree=0.8, random_state=42, eval_metric="logloss")
+    model_new = xgb.XGBClassifier(**XGBOOST_PARAMS)
     model_new.fit(train[FEATURE_COLS], train[TARGET_COL], verbose=False)
 
     y_pred = model_new.predict(test[FEATURE_COLS])

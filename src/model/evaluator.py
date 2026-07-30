@@ -8,17 +8,7 @@ from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_sc
 
 log = logging.getLogger(__name__)
 
-FEATURE_COLS = [
-    "return_5d", "return_20d", "return_60d",
-    "rs_5d", "rs_20d", "rs_60d",
-    "atr", "atr_pct",
-    "volume_surge", "volume_surge_flag",
-    "vndusd", "sbv_rate", "cpi_mom",
-    "pe_ratio", "pb_ratio", "roe", "rev_growth", "earn_growth",
-    "profit_margin", "debt_equity", "div_yield", "log_mcap", "forward_pe",
-]
-
-TARGET_COL = "outperform_5d"
+from src.model.schema import FEATURE_COLS, TARGET_COL
 
 
 class ModelEvaluator:

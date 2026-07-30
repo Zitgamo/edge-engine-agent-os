@@ -22,7 +22,7 @@ class MeanReversionStrategy(Strategy):
         n_metrics = len(rs_cols) + len(ret_cols)
         if "atr_pct" in latest.columns:
             n_metrics += 1
-        weight = 1.0 / n_metrics
+        weight = 1.0 / max(n_metrics, 1)
 
         for c in rs_cols:
             ranked = latest[c].rank(pct=True)

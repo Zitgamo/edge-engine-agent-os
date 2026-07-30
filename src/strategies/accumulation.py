@@ -3,7 +3,6 @@ from __future__ import annotations
 import logging
 
 import pandas as pd
-import numpy as np
 
 from src.strategies.base import Strategy
 
@@ -66,11 +65,11 @@ class AccumulationStrategy(Strategy):
             scores += ranked.fillna(0.5)
             n_metrics += 1
 
-        if "return_60d" in latest.columns:
-            rolled = latest["return_60d"].rolling(252, min_periods=20)
-            vol = latest["return_60d"].rolling(60, min_periods=20).std()
-            if vol.notna().any():
-                ranked_vol = vol.rank(pct=True)
+        if "return_60d" in df.columns and "ticker" in df.columns:
+            vol_by_ticker = df.groupby("ticker")["return_60d"].transform(lambda s: s.rolling(60, min_periods=20).std())
+            latest_vol = vol_by_ticker.loc[latest.index]
+            if latest_vol.notna().any():
+                ranked_vol = latest_vol.rank(pct=True)
                 scores += (1 - ranked_vol.fillna(0.5))
                 n_metrics += 1
 

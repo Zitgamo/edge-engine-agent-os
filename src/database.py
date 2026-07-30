@@ -183,13 +183,19 @@ def backfill_actuals(holding_period: int = 20) -> int:
     bm_sorted = bm.sort_values("date")[["date", "close"]].rename(columns={"close": "bm_close"})
     bm_dict = dict(zip(bm_sorted["date"].dt.strftime("%Y-%m-%d"), bm_sorted["bm_close"]))
 
+    # Cache per-ticker fetches (avoid O(N²) HTTP calls for repeat tickers)
+    price_cache: dict[str, pd.DataFrame] = {}
+    def _get_prices(tk: str) -> pd.DataFrame:
+        if tk not in price_cache:
+            price_cache[tk] = collector.fetch(tk, days=365).sort_values("date")
+        return price_cache[tk]
+
     actuals: list[dict] = []
     for _, row in pending.iterrows():
         sd = row["signal_date"]
         tk = row["ticker"]
         try:
-            df = collector.fetch(tk, days=365)
-            df_sorted = df.sort_values("date")
+            df_sorted = _get_prices(tk)
             dates = df_sorted["date"].dt.strftime("%Y-%m-%d").tolist()
             if sd not in dates:
                 continue
@@ -208,7 +214,9 @@ def backfill_actuals(holding_period: int = 20) -> int:
             actuals.append({
                 "signal_date": sd,
                 "ticker": tk,
+                # Keep _5d name for backwards compat with dashboard SQL/dashboard
                 "actual_excess_return_5d": excess,
+                "actual_excess_return": excess,
                 "actual_outperform": 1 if excess > 0 else 0,
                 "realized_date": dates[idx + holding_period],
             })

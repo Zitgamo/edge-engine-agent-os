@@ -56,15 +56,34 @@ class OHLCVCollector:
         return df[["ticker", "date", "open", "high", "low", "close", "volume"]].sort_values("date")
 
     def _build_vnindex(self, days: int = 365) -> pd.DataFrame:
-        log.info("Building VNINDEX composite from VN30 constituents")
+        # Try fetching the real VN-Index (^VNINDEX) from yfinance first
+        try:
+            log.info("Fetching real VNINDEX (^VNINDEX) from Yahoo Finance")
+            t = yf.Ticker("^VNINDEX")
+            hist = t.history(period=f"{days}d")
+            if not hist.empty:
+                df = hist.reset_index().rename(columns={
+                    "Date": "date", "Open": "open", "High": "high",
+                    "Low": "low", "Close": "close", "Volume": "volume",
+                })
+                df = self._normalize_date(df)
+                df["ticker"] = "VNINDEX"
+                df["volume"] = df["volume"].fillna(0).astype(int)
+                log.info("Real VNINDEX fetched: %d rows", len(df))
+                return df[["ticker", "date", "open", "high", "low", "close", "volume"]].sort_values("date")
+        except Exception as e:
+            log.warning("Real VNINDEX fetch failed: %s — falling back to composite", e)
+
+        # Fallback: synthesize composite from VN30 (equal-weight, price-normalized)
+        log.warning("Using SYNTHETIC VNINDEX composite (not the real market-cap-weighted index)")
         prices: dict[str, pd.Series] = {}
-        for t in VN30_TICKERS:
+        for tk in VN30_TICKERS:
             try:
-                df = self._fetch_yfinance(t, days)
+                df = self._fetch_yfinance(tk, days)
                 if not df.empty:
-                    prices[t] = df.set_index("date")["close"]
+                    prices[tk] = df.set_index("date")["close"]
             except (ValueError, OSError) as e:
-                log.warning("Failed to fetch %s for VNINDEX: %s", t, e)
+                log.warning("Failed to fetch %s for VNINDEX: %s", tk, e)
         if not prices:
             log.warning("No VN30 data for VNINDEX, using mock")
             return self._mock_data("VNINDEX", days)

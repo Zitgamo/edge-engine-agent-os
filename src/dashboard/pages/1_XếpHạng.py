@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import sys
 from pathlib import Path
@@ -13,6 +14,8 @@ import streamlit as st
 import plotly.express as px
 
 from src.dashboard.style import CUSTOM_CSS
+
+log = logging.getLogger(__name__)
 
 st.set_page_config(page_title="Xếp Hạng", page_icon="📡", layout="wide")
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
@@ -31,7 +34,8 @@ def load_data():
         else:
             from src.database import get_signals
             return get_signals(limit=500)
-    except Exception:
+    except Exception as e:
+        log.exception("load_data failed: %s", e)
         return pd.DataFrame()
 
 

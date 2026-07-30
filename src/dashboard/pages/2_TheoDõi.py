@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import sys
 from pathlib import Path
@@ -14,6 +15,8 @@ import plotly.express as px
 import plotly.graph_objects as go
 
 from src.dashboard.style import CUSTOM_CSS
+
+log = logging.getLogger(__name__)
 
 st.set_page_config(page_title="Theo Dõi", page_icon="📊", layout="wide")
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
@@ -32,7 +35,8 @@ def load_data():
         else:
             from src.database import get_performance_summary
             return get_performance_summary()
-    except Exception:
+    except Exception as e:
+        log.exception("load_data failed: %s", e)
         return pd.DataFrame()
 
 

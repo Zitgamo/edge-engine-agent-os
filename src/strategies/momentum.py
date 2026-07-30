@@ -23,7 +23,7 @@ class MomentumStrategy(Strategy):
         has_vol = "volume_surge" in latest.columns
         if has_vol:
             n_metrics += 1
-        weight = 1.0 / n_metrics
+        weight = 1.0 / max(n_metrics, 1)
 
         for c in ret_cols:
             ranked = latest[c].rank(pct=True)
