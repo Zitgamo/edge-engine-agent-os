@@ -171,7 +171,7 @@ if run_btn:
         freq_ticker = st.selectbox("Chọn mã để so sánh tần suất", tickers if tickers else ["HPG"], key="freq_ticker")
         total_per_year = monthly * 12
         with st.spinner(f"So sánh tần suất cho {freq_ticker}..."):
-            df_freq = backtest_compare_frequencies(
+            df_freq, histories = backtest_compare_frequencies(
                 ticker=freq_ticker,
                 total_per_year=total_per_year,
                 start_date=start.isoformat(),
@@ -179,12 +179,11 @@ if run_btn:
         if not df_freq.empty:
             fig = go.Figure()
             colors = {"monthly": "#00C853", "quarterly": "#FFA726", "yearly": "#FF5252"}
-            for _, r in df_freq.iterrows():
-                h = r["history"]
+            for freq, h in histories.items():
                 fig.add_trace(go.Scatter(
                     x=h["date"], y=h["portfolio_value"],
-                    mode="lines", name=r["frequency"],
-                    line=dict(color=colors.get(r["frequency"], "#888"), width=2),
+                    mode="lines", name=freq,
+                    line=dict(color=colors.get(freq, "#888"), width=2),
                 ))
             fig.update_layout(
                 title="Portfolio Value by Frequency",
@@ -198,7 +197,7 @@ if run_btn:
             fig.update_yaxes(gridcolor="#1A1D29")
             st.plotly_chart(fig, use_container_width=True)
 
-            df_display = df_freq.drop(columns=["history"]).copy()
+            df_display = df_freq.copy()
             df_display["total_return"] = df_display["total_return"].apply(lambda x: f"{x:+.2%}")
             df_display["cagr"] = df_display["cagr"].apply(lambda x: f"{x:+.2%}")
             df_display["sharpe"] = df_display["sharpe"].apply(lambda x: f"{x:.2f}")

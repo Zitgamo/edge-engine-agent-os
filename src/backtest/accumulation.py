@@ -237,9 +237,10 @@ def backtest_compare_frequencies(
     freq_mult = {"monthly": 1 / 12, "quarterly": 1 / 4, "yearly": 1.0}
 
     results = []
+    histories = {}
     prices = _fetch_prices(ticker, start_date, end_date)
     if prices.empty:
-        return pd.DataFrame()
+        return pd.DataFrame(), {}
 
     for freq in frequencies:
         per_amount = total_per_year * freq_mult.get(freq, 1 / 12)
@@ -247,6 +248,7 @@ def backtest_compare_frequencies(
         if dca.empty:
             continue
         m = compute_metrics(dca["portfolio_value"], dca["total_invested"].iloc[-1], dca["portfolio_value"].iloc[-1])
+        histories[freq] = dca
         results.append({
             "frequency": freq,
             "total_invested": m["total_invested"],
@@ -256,10 +258,9 @@ def backtest_compare_frequencies(
             "sharpe": m["sharpe"],
             "max_dd": m["max_drawdown"],
             "price_change": (prices["close"].iloc[-1] - prices["close"].iloc[0]) / prices["close"].iloc[0],
-            "history": dca,
         })
 
-    return pd.DataFrame(results)
+    return pd.DataFrame(results), histories
 
 
 def print_report(result: dict) -> None:
