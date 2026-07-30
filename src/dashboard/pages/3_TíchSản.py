@@ -26,7 +26,7 @@ from src.features.returns import ReturnFeatures
 from src.features.rs import RelativeStrength
 from src.features.volatility import ATR
 from src.features.volume import VolumeSurge
-from src.features.fundamental import add_fundamental_features
+from src.features.fundamental import add_fundamental_features, HistoricalFundamentalFeatures
 from src.features.macro import add_macro_features
 
 log = logging.getLogger(__name__)
@@ -43,7 +43,7 @@ def _generate_features_minimal() -> None:
         for idx, ticker in enumerate(tickers):
             if idx > 0:
                 time.sleep(0.3)
-            df = collector.fetch(ticker, days=365)
+            df = collector.fetch(ticker, days=1460)
             df = filter_quality(df, ticker)
             if df is not None:
                 errors = validator.validate(df)
@@ -62,7 +62,13 @@ def _generate_features_minimal() -> None:
             feature_dfs.append(df)
         features = pd.concat(feature_dfs, ignore_index=True)
         features = add_macro_features(features)
-        features = add_fundamental_features(features)
+
+        # Add historical fundamentals (PE/PB/ROE per quarter)
+        price_map = {df["ticker"].iloc[0]: df for df in all_dfs}
+        from src.features.fundamental import HistoricalFundamentalFeatures
+        hff = HistoricalFundamentalFeatures()
+        features = hff.add_historical_to_df(features, price_map)
+
         feat_path = _root / "data" / "processed" / "features.parquet"
         feat_path.parent.mkdir(parents=True, exist_ok=True)
         features.to_parquet(feat_path)

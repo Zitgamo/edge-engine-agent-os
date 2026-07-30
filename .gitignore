@@ -1,6 +1,7 @@
 # Data
 data/raw/
-data/processed/
+data/processed/*
+!data/processed/features.parquet
 data/engine.db
 
 # Models
