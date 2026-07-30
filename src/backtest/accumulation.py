@@ -224,6 +224,44 @@ def backtest_multi(
     return df
 
 
+def backtest_compare_frequencies(
+    ticker: str,
+    total_per_year: float = 120_000_000,
+    frequencies: list[str] | None = None,
+    start_date: str = INVESTMENT_DEFAULTS["start_date"],
+    end_date: str | None = None,
+) -> pd.DataFrame:
+    if frequencies is None:
+        frequencies = ["monthly", "quarterly", "yearly"]
+
+    freq_mult = {"monthly": 1 / 12, "quarterly": 1 / 4, "yearly": 1.0}
+
+    results = []
+    prices = _fetch_prices(ticker, start_date, end_date)
+    if prices.empty:
+        return pd.DataFrame()
+
+    for freq in frequencies:
+        per_amount = total_per_year * freq_mult.get(freq, 1 / 12)
+        dca = simulate_dca(prices, per_amount, freq)
+        if dca.empty:
+            continue
+        m = compute_metrics(dca["portfolio_value"], dca["total_invested"].iloc[-1], dca["portfolio_value"].iloc[-1])
+        results.append({
+            "frequency": freq,
+            "total_invested": m["total_invested"],
+            "final_value": m["final_value"],
+            "total_return": m["total_return"],
+            "cagr": m["cagr"],
+            "sharpe": m["sharpe"],
+            "max_dd": m["max_drawdown"],
+            "price_change": (prices["close"].iloc[-1] - prices["close"].iloc[0]) / prices["close"].iloc[0],
+            "history": dca,
+        })
+
+    return pd.DataFrame(results)
+
+
 def print_report(result: dict) -> None:
     sys_stdout = __import__("sys").stdout
     if hasattr(sys_stdout, "reconfigure"):

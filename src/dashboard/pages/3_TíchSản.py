@@ -13,7 +13,7 @@ import streamlit as st
 import plotly.graph_objects as go
 import plotly.express as px
 
-from src.backtest.accumulation import backtest_tich_san, backtest_multi, INVESTMENT_DEFAULTS
+from src.backtest.accumulation import backtest_tich_san, backtest_multi, backtest_compare_frequencies, INVESTMENT_DEFAULTS
 from src.data.universe import VN30_TICKERS
 from src.dashboard.style import CUSTOM_CSS
 
@@ -38,7 +38,7 @@ with st.sidebar:
 if run_btn:
     tickers = [t.strip().upper() for t in ticker_input.split(",") if t.strip()]
 
-    tab1, tab2, tab3 = st.tabs(["So Sánh", "Chi Tiết", "Xếp Hạng"])
+    tab1, tab2, tab3, tab4 = st.tabs(["So Sánh", "Chi Tiết", "Tần Suất", "Xếp Hạng"])
 
     with tab1:
         st.markdown("### So sánh nhiều mã")
@@ -166,6 +166,56 @@ if run_btn:
             st.error(f"No data for {detail_ticker}")
 
     with tab3:
+        st.markdown("### So sánh tần suất DCA")
+        st.caption("Cùng số tiền, cùng mã, cùng kỳ — khác tần suất mua")
+        freq_ticker = st.selectbox("Chọn mã để so sánh tần suất", tickers if tickers else ["HPG"], key="freq_ticker")
+        total_per_year = monthly * 12
+        with st.spinner(f"So sánh tần suất cho {freq_ticker}..."):
+            df_freq = backtest_compare_frequencies(
+                ticker=freq_ticker,
+                total_per_year=total_per_year,
+                start_date=start.isoformat(),
+            )
+        if not df_freq.empty:
+            fig = go.Figure()
+            colors = {"monthly": "#00C853", "quarterly": "#FFA726", "yearly": "#FF5252"}
+            for _, r in df_freq.iterrows():
+                h = r["history"]
+                fig.add_trace(go.Scatter(
+                    x=h["date"], y=h["portfolio_value"],
+                    mode="lines", name=r["frequency"],
+                    line=dict(color=colors.get(r["frequency"], "#888"), width=2),
+                ))
+            fig.update_layout(
+                title="Portfolio Value by Frequency",
+                plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+                font_color="#888", margin=dict(l=0, r=0, t=30, b=0),
+                hovermode="x unified", height=400,
+                yaxis=dict(title="Portfolio Value", tickformat=",.0f"),
+                legend=dict(orientation="h", y=1.1),
+            )
+            fig.update_xaxes(gridcolor="#1A1D29")
+            fig.update_yaxes(gridcolor="#1A1D29")
+            st.plotly_chart(fig, use_container_width=True)
+
+            df_display = df_freq.drop(columns=["history"]).copy()
+            df_display["total_return"] = df_display["total_return"].apply(lambda x: f"{x:+.2%}")
+            df_display["cagr"] = df_display["cagr"].apply(lambda x: f"{x:+.2%}")
+            df_display["sharpe"] = df_display["sharpe"].apply(lambda x: f"{x:.2f}")
+            df_display["max_dd"] = df_display["max_dd"].apply(lambda x: f"{x:.2%}")
+            df_display["final_value"] = df_display["final_value"].apply(lambda x: f"{x:,.0f}")
+            df_display["total_invested"] = df_display["total_invested"].apply(lambda x: f"{x:,.0f}")
+            df_display["price_change"] = df_display["price_change"].apply(lambda x: f"{x:+.2%}")
+            df_display = df_display.rename(columns={
+                "frequency": "Tần suất", "total_invested": "Đã đầu tư", "final_value": "Giá trị cuối",
+                "total_return": "Tổng lợi nhuận", "cagr": "CAGR", "sharpe": "Sharpe",
+                "max_dd": "Sụt giảm tối đa", "price_change": "Biến động giá",
+            })
+            st.dataframe(df_display, use_container_width=True, hide_index=True)
+        else:
+            st.error("Không có dữ liệu")
+
+    with tab4:
         st.markdown("### Xếp Hạng Cổ Phiếu Tích Sản")
         st.caption("Cổ phiếu được xếp hạng theo tiêu chí tích sản: ROE cao, PE/PB thấp, tăng trưởng ổn định, biến động thấp")
         try:
