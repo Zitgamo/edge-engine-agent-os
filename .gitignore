@@ -1,5 +1,7 @@
 # Data
-data/raw/
+data/raw/*
+!data/raw/*_raw.parquet
+data/raw/all_stocks_raw.parquet
 data/processed/*
 data/engine.db
 
