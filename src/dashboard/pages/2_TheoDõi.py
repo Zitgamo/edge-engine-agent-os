@@ -149,9 +149,12 @@ try:
 
     if not sigs.empty:
         from datetime import date as dt_date
+        import time as _t
         past = sigs[sigs["signal_date"] != str(dt_date.today())].head(30)
         results = []
-        for _, r in past.iterrows():
+        for i, (_, r) in enumerate(past.iterrows()):
+            if i > 0:
+                _t.sleep(0.25)
             result = track_signal(
                 r["ticker"], str(r["signal_date"])[:10],
                 stop_loss=float(r.get("stop_loss", -0.03)),

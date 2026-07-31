@@ -13,9 +13,14 @@ from src.config import Config
 
 log = logging.getLogger(__name__)
 
+# Session-level cache: avoids re-fetching the same ticker from yfinance (rate-limit protection)
+_stock_cache: dict[str, pd.DataFrame | None] = {}
+
 
 def load_stock_data(ticker: str, data_dir: str | None = None) -> pd.DataFrame | None:
-    """Load raw OHLCV data for a ticker — parquet first, yfinance fallback."""
+    """Load raw OHLCV data for a ticker — parquet first, yfinance fallback (cached)."""
+    if ticker in _stock_cache:
+        return _stock_cache[ticker]
     if data_dir is None:
         data_dir = str(Config.raw_data_dir)
     pattern = os.path.join(data_dir, f"{ticker}_raw.parquet")
@@ -24,6 +29,7 @@ def load_stock_data(ticker: str, data_dir: str | None = None) -> pd.DataFrame | 
         try:
             df = pd.read_parquet(files[0])
             df = df.sort_values("date").reset_index(drop=True)
+            _stock_cache[ticker] = df
             return df
         except Exception as e:
             log.warning("Cannot load parquet %s: %s", ticker, e)
@@ -32,6 +38,7 @@ def load_stock_data(ticker: str, data_dir: str | None = None) -> pd.DataFrame | 
         t = yf.Ticker(f"{ticker}.VN")
         df = t.history(period="6mo")
         if df.empty:
+            _stock_cache[ticker] = None
             return None
         df = df.reset_index()
         df["ticker"] = ticker
@@ -39,11 +46,15 @@ def load_stock_data(ticker: str, data_dir: str | None = None) -> pd.DataFrame | 
             "Date": "date", "Open": "open", "High": "high",
             "Low": "low", "Close": "close", "Volume": "volume",
         })
-        df["date"] = pd.to_datetime(df["date"]).dt.tz_localize(None)
+        df["date"] = pd.to_datetime(df["date"])
+        if df["date"].dt.tz is not None:
+            df["date"] = df["date"].dt.tz_localize(None)
         df = df.sort_values("date").reset_index(drop=True)
+        _stock_cache[ticker] = df
         return df
     except Exception as e:
         log.warning("yfinance fallback failed for %s: %s", ticker, e)
+        _stock_cache[ticker] = None
     return None
 
 

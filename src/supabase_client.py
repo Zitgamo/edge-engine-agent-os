@@ -40,12 +40,16 @@ class SupabaseClient:
             "Accept": "application/json",
         }
 
-    def _upsert(self, table: str, rows: list[dict]) -> int:
+    def _upsert(self, table: str, rows: list[dict], on_conflict: str | None = None) -> int:
         if not rows:
             return 0
+        params = {}
+        if on_conflict:
+            params["on_conflict"] = on_conflict
         resp = requests.post(
             f"{self.base}/{table}",
             headers={**self._headers(use_service=True), "Prefer": "resolution=merge-duplicates"},
+            params=params,
             json=rows,
             timeout=15,
         )
@@ -155,7 +159,7 @@ class SupabaseClient:
             }
             for r in rows
         ]
-        return self._upsert("signals", data)
+        return self._upsert("signals", data, on_conflict="signal_date,ticker")
 
     def sync_actuals(self) -> int:
         from src.database import get_conn
@@ -178,7 +182,7 @@ class SupabaseClient:
             }
             for r in rows
         ]
-        return self._upsert("actuals", data)
+        return self._upsert("actuals", data, on_conflict="signal_date,ticker")
 
     def sync_pipeline_runs(self) -> int:
         from src.database import get_conn
@@ -227,7 +231,7 @@ class SupabaseClient:
             }
             for r in rows
         ]
-        return self._upsert("strategy_performance", data)
+        return self._upsert("strategy_performance", data, on_conflict="strategy_name,signal_date,ticker")
 
     def sync_all(self) -> dict[str, int]:
         counts = {}

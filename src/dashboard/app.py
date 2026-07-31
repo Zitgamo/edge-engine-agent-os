@@ -13,6 +13,7 @@ log = logging.getLogger(__name__)
 
 import pandas as pd
 import streamlit as st
+import time
 from datetime import date, datetime
 
 from src.dashboard.style import CUSTOM_CSS
@@ -152,7 +153,9 @@ try:
     if not past_signals.empty:
         past_signals = past_signals[past_signals["signal_date"] != str(date.today())]
         tracking_results = []
-        for _, r in past_signals.head(15).iterrows():
+        for i, (_, r) in enumerate(past_signals.head(15).iterrows()):
+            if i > 0:
+                time.sleep(0.25)
             result = track_signal(
                 r["ticker"],
                 str(r["signal_date"])[:10],
