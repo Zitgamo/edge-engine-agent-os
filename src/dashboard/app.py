@@ -71,16 +71,24 @@ with cols[1]:
         unsafe_allow_html=True,
     )
 
-# === TODAY'S SIGNALS ===
-today_sigs = sigs[sigs["signal_date"] == str(today_vn())] if not sigs.empty else pd.DataFrame()
-if not today_sigs.empty:
-    st.markdown('<div class="section-title">TOP 3 HÔM NAY</div>', unsafe_allow_html=True)
+# === LATEST SIGNALS ===
+latest_signal_date = sigs["signal_date"].max() if not sigs.empty else None
+latest_sigs = (
+    sigs[sigs["signal_date"] == latest_signal_date]
+    if latest_signal_date is not None
+    else pd.DataFrame()
+)
+if not latest_sigs.empty:
+    st.markdown(
+        f'<div class="section-title">TOP 3 PHIÊN GẦN NHẤT · {latest_signal_date}</div>',
+        unsafe_allow_html=True,
+    )
 
     tickers = []
     scores = []
     sls = []
     tps = []
-    for _, r in today_sigs.iterrows():
+    for _, r in latest_sigs.iterrows():
         tickers.append(r.get("ticker", "?"))
         scores.append(r.get("score", 0))
         sls.append(r.get("stop_loss", -0.03))
@@ -105,7 +113,7 @@ if not today_sigs.empty:
     cards_html += "</div>"
     st.markdown(cards_html, unsafe_allow_html=True)
 else:
-    st.info("No signal for today yet. Pipeline runs every trading day at 9 AM VN time.")
+    st.info("Chưa có signal. Pipeline chạy mỗi ngày giao dịch lúc 9:00 VN.")
 
 
 # === KPI ROW ===

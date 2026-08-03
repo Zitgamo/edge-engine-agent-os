@@ -212,22 +212,18 @@ def run_pipeline(config: Config | None = None) -> None:
     storage.save_processed(ranking, "ranking.parquet")
 
     latest_market_date = pd.Timestamp(ranking["date"].max()).date()
+    data_lag_days = (today_vn() - latest_market_date).days
+    if latest_market_date > today_vn() or data_lag_days > 5:
+        raise RuntimeError(
+            f"Market data is stale or from the future (latest={latest_market_date}, "
+            f"today={today_vn()})"
+        )
     if latest_market_date != today_vn():
         log.warning(
-            "No fresh market session for %s (latest data=%s); skipping signal publication",
-            today_vn(),
+            "Using latest closed market session %s for the %s run",
             latest_market_date,
+            today_vn(),
         )
-        sm.backfill_strategy_actuals()
-        report_metrics = all_metrics.get(f"T+{HOLDING_PERIOD}") or all_metrics.get("T+5", {})
-        save_pipeline_run(report_metrics)
-        from src.database import backfill_actuals
-        bf_count = backfill_actuals(holding_period=HOLDING_PERIOD)
-        log.info("Backfilled %d actuals", bf_count)
-        log.info("=== Syncing to cloud (Supabase) ===")
-        from src.supabase_client import sync_all
-        sync_all()
-        return
 
     sm.save_signals(rankings, n=N_PICKS, signal_date=latest_market_date.isoformat())
     sm.backfill_strategy_actuals()
