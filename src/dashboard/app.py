@@ -170,9 +170,10 @@ try:
             kpi_data = [
                 ("🟢", str(summary["hit_tp"]), "Hit TP", "kpi-green"),
                 ("🔴", str(summary["hit_sl"]), "Hit SL", "kpi-red"),
-                ("🟡", str(summary["active"]), "Active", "kpi-blue"),
+                ("🟡", str(summary["settling"]), "T+2 / Settling", "kpi-blue"),
+                ("🔵", str(summary["active"]), "Active", "kpi-blue"),
                 ("📊", f"{summary['win_rate']:.0f}%", "Win Rate", "kpi-green" if summary['win_rate'] >= 50 else "kpi-red"),
-                ("💰", f"{summary['total_pnl']:+.2%}", "Portfolio P&L", "kpi-green" if summary['total_pnl'] > 0 else "kpi-red"),
+                ("💰", f"{summary['total_pnl']:+.2%}", "Mark-to-Market P&L", "kpi-green" if summary['total_pnl'] > 0 else "kpi-red"),
             ]
             for icon, val, label, cls in kpi_data:
                 kpi_html += f"""

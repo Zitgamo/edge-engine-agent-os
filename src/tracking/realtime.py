@@ -3,7 +3,7 @@ from __future__ import annotations
 import glob
 import logging
 import os
-from datetime import date, datetime
+from datetime import date
 from typing import Any
 
 import numpy as np
@@ -14,31 +14,28 @@ from src.config import Config
 log = logging.getLogger(__name__)
 
 # Session-level cache: avoids re-fetching the same ticker from yfinance (rate-limit protection)
-_stock_cache: dict[str, pd.DataFrame | None] = {}
+_stock_cache: dict[tuple[str, str], pd.DataFrame | None] = {}
 
 
-def load_stock_data(ticker: str, data_dir: str | None = None) -> pd.DataFrame | None:
-    """Load raw OHLCV data for a ticker — parquet first, yfinance fallback (cached)."""
-    if ticker in _stock_cache:
-        return _stock_cache[ticker]
-    if data_dir is None:
-        data_dir = str(Config.raw_data_dir)
-    pattern = os.path.join(data_dir, f"{ticker}_raw.parquet")
-    files = glob.glob(pattern)
-    if files:
-        try:
-            df = pd.read_parquet(files[0])
-            df = df.sort_values("date").reset_index(drop=True)
-            _stock_cache[ticker] = df
-            return df
-        except Exception as e:
-            log.warning("Cannot load parquet %s: %s", ticker, e)
+def _normalize_stock_data(df: pd.DataFrame) -> pd.DataFrame:
+    """Normalize market data into the schema expected by the tracker."""
+    df = df.copy()
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    df = df.dropna(subset=["date"])
+    if df["date"].dt.tz is not None:
+        df["date"] = df["date"].dt.tz_localize(None)
+    df["date"] = df["date"].dt.normalize()
+    return df.sort_values("date").reset_index(drop=True)
+
+
+def _fetch_yfinance(ticker: str) -> pd.DataFrame | None:
+    """Fetch recent OHLCV data from Yahoo Finance."""
     import yfinance as yf
+
     try:
         t = yf.Ticker(f"{ticker}.VN")
         df = t.history(period="6mo")
         if df.empty:
-            _stock_cache[ticker] = None
             return None
         df = df.reset_index()
         df["ticker"] = ticker
@@ -46,15 +43,49 @@ def load_stock_data(ticker: str, data_dir: str | None = None) -> pd.DataFrame | 
             "Date": "date", "Open": "open", "High": "high",
             "Low": "low", "Close": "close", "Volume": "volume",
         })
-        df["date"] = pd.to_datetime(df["date"])
-        if df["date"].dt.tz is not None:
-            df["date"] = df["date"].dt.tz_localize(None)
-        df = df.sort_values("date").reset_index(drop=True)
-        _stock_cache[ticker] = df
-        return df
+        return _normalize_stock_data(df)
     except Exception as e:
         log.warning("yfinance fallback failed for %s: %s", ticker, e)
-        _stock_cache[ticker] = None
+        return None
+
+
+def load_stock_data(ticker: str, data_dir: str | None = None) -> pd.DataFrame | None:
+    """Load raw OHLCV data for a ticker — parquet first, yfinance fallback (cached)."""
+    if data_dir is None:
+        data_dir = str(Config.raw_data_dir)
+    cache_key = (str(data_dir), ticker)
+    if cache_key in _stock_cache:
+        return _stock_cache[cache_key]
+
+    pattern = os.path.join(data_dir, f"{ticker}_raw.parquet")
+    parquet_df: pd.DataFrame | None = None
+    files = glob.glob(pattern)
+    if files:
+        try:
+            parquet_df = _normalize_stock_data(pd.read_parquet(files[0]))
+            latest_date = parquet_df["date"].max()
+            if latest_date >= pd.Timestamp(date.today()):
+                _stock_cache[cache_key] = parquet_df
+                return parquet_df
+            log.info(
+                "Refreshing stale parquet for %s (latest=%s)",
+                ticker,
+                latest_date.date(),
+            )
+        except Exception as e:
+            log.warning("Cannot load parquet %s: %s", ticker, e)
+
+    fresh_df = _fetch_yfinance(ticker)
+    if fresh_df is not None and not fresh_df.empty:
+        _stock_cache[cache_key] = fresh_df
+        return fresh_df
+
+    if parquet_df is not None and not parquet_df.empty:
+        log.warning("Using stale parquet for %s because fresh data is unavailable", ticker)
+        _stock_cache[cache_key] = parquet_df
+        return parquet_df
+
+    _stock_cache[cache_key] = None
     return None
 
 
