@@ -25,6 +25,7 @@ class Config:
 
     stop_loss: float = float(os.getenv("STOP_LOSS", "-0.03"))
     take_profit: float = float(os.getenv("TAKE_PROFIT", "0.08"))
+    round_trip_cost: float = float(os.getenv("ROUND_TRIP_COST", "0.0"))
 
     @classmethod
     def ensure_dirs(cls) -> None:

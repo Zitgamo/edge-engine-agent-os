@@ -19,19 +19,32 @@ from src.features.volatility import ATR
 from src.features.volume import VolumeSurge
 from src.labels.outperformance import OutperformanceLabel
 from src.logging_setup import setup_logging
-from src.model.schema import FEATURE_COLS, ENSEMBLE_HORIZONS, XGBOOST_PARAMS, N_PICKS, HOLDING_PERIOD
 from src.model.evaluator import ModelEvaluator
+from src.model.schema import (
+    ENSEMBLE_HORIZONS as _ENSEMBLE_HORIZONS,
+)
+from src.model.schema import (
+    FEATURE_COLS,
+    MODEL_VERSION,
+    XGBOOST_PARAMS,
+)
+from src.model.schema import (
+    HOLDING_PERIOD as _HOLDING_PERIOD,
+)
+from src.model.schema import (
+    N_PICKS as _N_PICKS,
+)
 from src.model.trainer import ModelTrainer  # noqa: F401  (kept for backwards compat)
-from src.ranking.ranker import Ranker
 from src.ranking.signal import SignalGenerator
+from src.time_utils import today_vn
 
 log = logging.getLogger(__name__)
 
 # Re-export for any external consumers; canonical values live in src.model.schema
-ENSEMBLE_HORIZONS = ENSEMBLE_HORIZONS
+ENSEMBLE_HORIZONS = _ENSEMBLE_HORIZONS
 TRAIN_SPLIT = 0.8
-N_PICKS = N_PICKS
-HOLDING_PERIOD = HOLDING_PERIOD
+N_PICKS = _N_PICKS
+HOLDING_PERIOD = _HOLDING_PERIOD
 STOP_LOSS = -0.03
 TAKE_PROFIT = 0.08
 
@@ -50,13 +63,26 @@ def run_pipeline(config: Config | None = None) -> None:
 
     universe = get_ticker_universe()
     bm = collector.fetch("VNINDEX", days=365)
-    validator.validate(bm)
+    benchmark_errors = validator.validate(bm)
+    if benchmark_errors or bm.empty:
+        raise RuntimeError(f"Benchmark data failed validation: {benchmark_errors}")
+    if config.data_source == "yfinance" and collector.last_benchmark_source != "yahoo":
+        raise RuntimeError(
+            "Refusing to publish signals without the real VNINDEX benchmark "
+            f"(source={collector.last_benchmark_source})"
+        )
+    storage.save_raw(bm, "VNINDEX_raw.parquet")
 
     all_dfs: list[pd.DataFrame] = []
     collected = 0
     skipped = 0
     for ticker in universe:
-        df = collector.fetch(ticker, days=365)
+        try:
+            df = collector.fetch(ticker, days=365)
+        except Exception as exc:
+            log.exception("Failed to collect %s: %s", ticker, exc)
+            skipped += 1
+            continue
         df = filter_quality(df, ticker)
         if df is None:
             skipped += 1
@@ -70,6 +96,11 @@ def run_pipeline(config: Config | None = None) -> None:
         all_dfs.append(df)
         collected += 1
     log.info("Collected %d/%d tickers (skipped %d)", collected, len(universe), skipped)
+    minimum_collected = max(30, int(len(universe) * 0.5))
+    if collected < minimum_collected:
+        raise RuntimeError(
+            f"Only collected {collected}/{len(universe)} tickers; refusing to publish a partial run"
+        )
 
     combined = pd.concat(all_dfs, ignore_index=True)
     storage.save_raw(combined, "all_stocks_raw.parquet")
@@ -115,11 +146,15 @@ def run_pipeline(config: Config | None = None) -> None:
     log.info("=== Walk-forward train/test split ===")
     trainable = features.dropna(subset=FEATURE_COLS + [f"outperform_{h}d" for h in ENSEMBLE_HORIZONS])
     dates = sorted(trainable["date"].unique())
+    if len(dates) < 30:
+        raise RuntimeError(f"Only {len(dates)} usable dates remain after feature/label construction")
     cutoff = int(len(dates) * TRAIN_SPLIT)
     train_dates = set(dates[:cutoff])
     test_dates = dates[cutoff:]
     train = trainable[trainable["date"].isin(train_dates)]
     test = trainable[trainable["date"].isin(test_dates)]
+    if train.empty or test.empty:
+        raise RuntimeError("Walk-forward split produced an empty train or test set")
     log.info("Train: %d dates, %d rows | Test: %d dates, %d rows", len(train_dates), len(train), len(test_dates), len(test))
 
     log.info("=== Training ensemble models (walk-forward) ===")
@@ -168,20 +203,42 @@ def run_pipeline(config: Config | None = None) -> None:
     from src.strategies import StrategyManager
     sm = StrategyManager(holding_period=HOLDING_PERIOD)
     rankings = sm.run_all(df_all)
-    sm.save_signals(rankings, n=N_PICKS)
-    sm.backfill_strategy_actuals()
 
     ranking = rankings.get("_ensemble", rankings.get("outperform", pd.DataFrame()))
     log.info("Using ensemble ranking: %s", list(ranking.head(3)["ticker"]) if not ranking.empty else "empty")
+    if ranking.empty:
+        raise RuntimeError("No ensemble ranking was produced")
     storage.save_processed(ranking, "ranking.parquet")
+
+    latest_market_date = pd.Timestamp(ranking["date"].max()).date()
+    if latest_market_date != today_vn():
+        log.warning(
+            "No fresh market session for %s (latest data=%s); skipping signal publication",
+            today_vn(),
+            latest_market_date,
+        )
+        sm.backfill_strategy_actuals()
+        report_metrics = all_metrics.get(f"T+{HOLDING_PERIOD}") or all_metrics.get("T+5", {})
+        save_pipeline_run(report_metrics)
+        from src.database import backfill_actuals
+        bf_count = backfill_actuals(holding_period=HOLDING_PERIOD)
+        log.info("Backfilled %d actuals", bf_count)
+        log.info("=== Syncing to cloud (Supabase) ===")
+        from src.supabase_client import sync_all
+        sync_all()
+        return
+
+    sm.save_signals(rankings, n=N_PICKS, signal_date=latest_market_date.isoformat())
+    sm.backfill_strategy_actuals()
 
     signal = SignalGenerator().pick_top_n(
         ranking, n=N_PICKS,
         stop_loss=STOP_LOSS,
         take_profit=TAKE_PROFIT,
+        signal_date=latest_market_date.isoformat(),
     )
     storage.save_processed(signal, "signal.parquet")
-    save_signals(signal)
+    save_signals(signal, model_version=MODEL_VERSION)
     log.info("Top %d (ensemble): %s", N_PICKS, list(signal["ticker"]))
 
     log.info("=== Ceiling context analysis (top picks) ===")
@@ -199,7 +256,8 @@ def run_pipeline(config: Config | None = None) -> None:
     from src.notification.telegram import send_signal
     send_signal(signal, "ensemble")
 
-    save_pipeline_run(all_metrics.get("T+5", {}))
+    report_metrics = all_metrics.get(f"T+{HOLDING_PERIOD}") or all_metrics.get("T+5", {})
+    save_pipeline_run(report_metrics)
     log.info("=== Backfilling actuals (T+%d) ===", HOLDING_PERIOD)
     from src.database import backfill_actuals
     bf_count = backfill_actuals(holding_period=HOLDING_PERIOD)

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import sys
 from pathlib import Path
 
@@ -11,7 +10,6 @@ if str(_root) not in sys.path:
 
 import pandas as pd
 import streamlit as st
-import plotly.express as px
 
 from src.dashboard.style import CUSTOM_CSS
 
@@ -21,14 +19,12 @@ st.set_page_config(page_title="Xếp Hạng", page_icon="📡", layout="wide")
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
 
+@st.cache_data(ttl=300, max_entries=2)
 def load_data():
-    use_cloud = os.getenv("SUPABASE_URL") and os.getenv("SUPABASE_ANON_KEY")
     try:
-        if use_cloud:
-            from src.supabase_client import get_client
-            client = get_client()
-            if not client:
-                return pd.DataFrame()
+        from src.supabase_client import get_client
+        client = get_client()
+        if client:
             raw = client.get_signals(limit=500)
             return pd.DataFrame(raw) if raw else pd.DataFrame()
         else:
@@ -81,7 +77,7 @@ table = display[["date_str", "ticker", "score_pct", "excess", "result"]].rename(
 
 st.dataframe(
     table,
-    use_container_width=True,
+    width="stretch",
     hide_index=True,
     column_config={
         "Result": st.column_config.TextColumn("Result", help="WIN / LOSS / PENDING"),
@@ -111,4 +107,4 @@ if "actual_outperform" in df.columns:
         top = top.sort_values("avg_ret", ascending=False).head(10)
         top["avg_ret"] = top["avg_ret"].apply(lambda x: f"{x:+.2%}")
         top["win_rate"] = top["win_rate"].apply(lambda x: f"{x:.0%}")
-        st.dataframe(top, use_container_width=True, hide_index=True)
+        st.dataframe(top, width="stretch", hide_index=True)

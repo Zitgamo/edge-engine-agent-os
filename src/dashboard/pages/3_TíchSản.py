@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
 
@@ -16,7 +15,7 @@ import streamlit as st
 import plotly.graph_objects as go
 import plotly.express as px
 
-from src.accumulation import backtest_tich_san, backtest_multi, backtest_compare_frequencies, INVESTMENT_DEFAULTS
+from src.accumulation import backtest_tich_san, backtest_multi, backtest_compare_frequencies
 from src.config import Config
 from src.data.collector import OHLCVCollector
 from src.data.universe import VN30_TICKERS, filter_quality
@@ -26,7 +25,6 @@ from src.features.returns import ReturnFeatures
 from src.features.rs import RelativeStrength
 from src.features.volatility import ATR
 from src.features.volume import VolumeSurge
-from src.features.fundamental import add_fundamental_features
 from src.features.macro import add_macro_features
 
 log = logging.getLogger(__name__)
@@ -158,7 +156,7 @@ if run_btn:
                 "sharpe": "Sharpe", "max_dd": "Max DD", "final_value": "Final",
                 "total_invested": "Invested", "years": "Years", "active_return": "Active Ret",
             })
-            st.dataframe(df_display, use_container_width=True, hide_index=True)
+            st.dataframe(df_display, width="stretch", hide_index=True)
 
             # CAGR bar chart
             df_plot = df.copy().head(10)
@@ -177,7 +175,7 @@ if run_btn:
             )
             fig.update_xaxes(gridcolor="#1A1D29")
             fig.update_yaxes(gridcolor="#1A1D29")
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
 
     with tab2:
         st.markdown("### Chi tiết từng mã")
@@ -238,7 +236,7 @@ if run_btn:
             )
             fig.update_xaxes(gridcolor="#1A1D29")
             fig.update_yaxes(gridcolor="#1A1D29")
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
 
             # DCA history table
             st.markdown("### Lịch sử DCA (24 tháng gần nhất)")
@@ -255,7 +253,7 @@ if run_btn:
                 "pnl_pct": "P&L",
             })
             st.dataframe(dca_display[["Date", "Price", "Shares", "Invested", "Value", "P&L"]],
-                        use_container_width=True, hide_index=True)
+                        width="stretch", hide_index=True)
         else:
             st.error(f"No data for {detail_ticker}")
 
@@ -289,7 +287,7 @@ if run_btn:
             )
             fig.update_xaxes(gridcolor="#1A1D29")
             fig.update_yaxes(gridcolor="#1A1D29")
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
 
             df_display = df_freq.copy()
             df_display["total_return"] = df_display["total_return"].apply(lambda x: f"{x:+.2%}")
@@ -304,7 +302,7 @@ if run_btn:
                 "total_return": "Tổng lợi nhuận", "cagr": "CAGR", "sharpe": "Sharpe",
                 "max_dd": "Sụt giảm tối đa", "price_change": "Biến động giá",
             })
-            st.dataframe(df_display, use_container_width=True, hide_index=True)
+            st.dataframe(df_display, width="stretch", hide_index=True)
         else:
             st.error("Không có dữ liệu")
 
@@ -324,7 +322,7 @@ if run_btn:
                 if not ranking.empty:
                     top = ranking.head(20)
                     top["score"] = top["score"].apply(lambda x: f"{x:.4f}")
-                    st.dataframe(top, use_container_width=True, hide_index=True)
+                    st.dataframe(top, width="stretch", hide_index=True)
                 else:
                     st.info("No ranking available")
             else:
@@ -386,7 +384,7 @@ if run_btn:
                             legend=dict(orientation="h", y=1.1))
                         fig.update_xaxes(gridcolor="#1A1D29")
                         fig.update_yaxes(gridcolor="#1A1D29")
-                        st.plotly_chart(fig, use_container_width=True)
+                        st.plotly_chart(fig, width="stretch")
 
                         # Holdings table
                         st.markdown("### Chi tiết danh mục hiện tại")
@@ -410,7 +408,7 @@ if run_btn:
                             "ticker": "Mã", "signal": "Tín hiệu", "shares": "Số lượng",
                             "cost_basis": "Giá vốn", "value": "Giá trị", "pnl": "Lời lỗ", "pnl_pct": "Lời lỗ %",
                         })
-                        st.dataframe(latest_display, use_container_width=True, hide_index=True)
+                        st.dataframe(latest_display, width="stretch", hide_index=True)
                     else:
                         st.info("Không đủ dữ liệu để phân tích danh mục")
                 except Exception as e:

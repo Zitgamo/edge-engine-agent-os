@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from datetime import UTC, datetime
 
 import pandas as pd
@@ -15,10 +16,13 @@ log = logging.getLogger(__name__)
 class OHLCVCollector:
     def __init__(self, config: Config | None = None) -> None:
         self.config = config or Config()
+        self.last_benchmark_source: str | None = None
 
     def fetch(self, ticker: str, days: int = 365) -> pd.DataFrame:
         source = self.config.data_source
         if source == "mock":
+            if ticker == "VNINDEX":
+                self.last_benchmark_source = "mock"
             return self._mock_data(ticker, days)
         if source == "yfinance":
             return self._fetch_yfinance(ticker, days)
@@ -29,7 +33,20 @@ class OHLCVCollector:
         if hasattr(df["date"].dt, "tz") and df["date"].dt.tz is not None:
             df["date"] = df["date"].dt.tz_localize(None)
         df["date"] = df["date"].dt.normalize()
-        return df
+        return df.drop_duplicates(subset=["date"], keep="last").sort_values("date").reset_index(drop=True)
+
+    @staticmethod
+    def _history_with_retry(ticker: yf.Ticker, days: int, attempts: int = 3) -> pd.DataFrame:
+        """Fetch history with bounded retries for transient Yahoo failures."""
+        last_error: Exception | None = None
+        for attempt in range(attempts):
+            try:
+                return ticker.history(period=f"{days}d", auto_adjust=False)
+            except Exception as exc:
+                last_error = exc
+                if attempt + 1 < attempts:
+                    time.sleep(2**attempt)
+        raise RuntimeError(f"Yahoo Finance request failed after {attempts} attempts") from last_error
 
     def _fetch_yfinance(self, ticker: str, days: int = 365) -> pd.DataFrame:
         if ticker == "VNINDEX":
@@ -37,7 +54,7 @@ class OHLCVCollector:
         yf_ticker = f"{ticker}.VN"
         log.info("Fetching %s from Yahoo Finance (%d days)", yf_ticker, days)
         t = yf.Ticker(yf_ticker)
-        hist = t.history(period=f"{days}d")
+        hist = self._history_with_retry(t, days)
         if hist.empty:
             log.warning("No data for %s, returning empty (delisted)", yf_ticker)
             return pd.DataFrame()
@@ -60,7 +77,7 @@ class OHLCVCollector:
         try:
             log.info("Fetching real VNINDEX (^VNINDEX) from Yahoo Finance")
             t = yf.Ticker("^VNINDEX")
-            hist = t.history(period=f"{days}d")
+            hist = self._history_with_retry(t, days)
             if not hist.empty:
                 df = hist.reset_index().rename(columns={
                     "Date": "date", "Open": "open", "High": "high",
@@ -70,22 +87,25 @@ class OHLCVCollector:
                 df["ticker"] = "VNINDEX"
                 df["volume"] = df["volume"].fillna(0).astype(int)
                 log.info("Real VNINDEX fetched: %d rows", len(df))
+                self.last_benchmark_source = "yahoo"
                 return df[["ticker", "date", "open", "high", "low", "close", "volume"]].sort_values("date")
         except Exception as e:
             log.warning("Real VNINDEX fetch failed: %s — falling back to composite", e)
 
         # Fallback: synthesize composite from VN30 (equal-weight, price-normalized)
         log.warning("Using SYNTHETIC VNINDEX composite (not the real market-cap-weighted index)")
+        self.last_benchmark_source = "synthetic"
         prices: dict[str, pd.Series] = {}
         for tk in VN30_TICKERS:
             try:
                 df = self._fetch_yfinance(tk, days)
                 if not df.empty:
                     prices[tk] = df.set_index("date")["close"]
-            except (ValueError, OSError) as e:
+            except Exception as e:
                 log.warning("Failed to fetch %s for VNINDEX: %s", tk, e)
         if not prices:
             log.warning("No VN30 data for VNINDEX, using mock")
+            self.last_benchmark_source = "mock"
             return self._mock_data("VNINDEX", days)
         normalized = pd.DataFrame({t: s / s.iloc[0] * 1000 for t, s in prices.items()})
         composite = normalized.mean(axis=1).ffill().reset_index()

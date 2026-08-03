@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-from datetime import date
 
 import pandas as pd
 
@@ -19,6 +18,7 @@ class SignalGenerator:
         weighted: bool = True,
         stop_loss: float = SL_DEFAULT,
         take_profit: float = TP_DEFAULT,
+        signal_date: str | None = None,
     ) -> pd.DataFrame:
         if "rank" not in ranking.columns:
             raise ValueError("DataFrame must contain 'rank' column")
@@ -26,7 +26,8 @@ class SignalGenerator:
         latest_date = ranking["date"].max()
         latest = ranking[ranking["date"] == latest_date].copy()
         top_n = latest[latest["rank"] <= n].copy()
-        top_n["signal_date"] = date.today().isoformat()
+        effective_signal_date = signal_date or pd.Timestamp(latest_date).date().isoformat()
+        top_n["signal_date"] = effective_signal_date
         top_n["action"] = "BUY"
 
         if weighted:
@@ -47,7 +48,7 @@ class SignalGenerator:
         else:
             top_n["ensemble_score"] = top_n["score"]
 
-        log.info("Top %d picks for %s: %s", n, date.today().isoformat(), list(top_n["ticker"]))
+        log.info("Top %d picks for %s: %s", n, effective_signal_date, list(top_n["ticker"]))
         if weighted:
             log.info("Weights: %s", dict(zip(top_n["ticker"], top_n["weight"])))
         return top_n[["signal_date", "date", "rank", "ticker", "score", "ensemble_score", "weight", "action", "stop_loss", "take_profit"]]

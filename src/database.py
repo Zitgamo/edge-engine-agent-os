@@ -69,12 +69,22 @@ def init_db() -> None:
             metric_value REAL
         );
     """)
+    # Migrate older local databases that allowed duplicate realized rows.
+    conn.execute(
+        """DELETE FROM actuals
+           WHERE id NOT IN (
+               SELECT MAX(id) FROM actuals GROUP BY signal_date, ticker
+           )"""
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_actuals_unique ON actuals(signal_date, ticker)"
+    )
     conn.commit()
     conn.close()
     log.info("Database initialized at %s", DB_PATH)
 
 
-def save_signals(signals: pd.DataFrame) -> int:
+def save_signals(signals: pd.DataFrame, model_version: str = "xgboost_technical_v2") -> int:
     conn = get_conn()
     sig_date = signals["signal_date"].iloc[0] if "signal_date" in signals.columns else date.today().isoformat()
     # Delete existing signals for same date to avoid duplicates
@@ -89,7 +99,7 @@ def save_signals(signals: pd.DataFrame) -> int:
             float(row.get("ensemble_score", row["score"])),
             float(row.get("stop_loss", 0.0)),
             float(row.get("take_profit", 0.0)),
-            "xgboost_v1",
+            model_version,
         ))
     conn.executemany(
         "INSERT INTO signals (signal_date, ticker, rank, score, ensemble_score, stop_loss, take_profit, model_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -151,9 +161,14 @@ def update_actuals(df: pd.DataFrame) -> int:
             row["ticker"],
         ))
     conn.executemany(
-        """INSERT OR REPLACE INTO actuals
+        """INSERT INTO actuals
            (actual_excess_return_5d, actual_outperform, realized_date, signal_date, ticker)
-           VALUES (?, ?, ?, ?, ?)""",
+           VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT(signal_date, ticker) DO UPDATE SET
+             actual_excess_return_5d = excluded.actual_excess_return_5d,
+             actual_outperform = excluded.actual_outperform,
+             realized_date = excluded.realized_date,
+             updated_at = CURRENT_TIMESTAMP""",
         rows,
     )
     conn.commit()
@@ -164,9 +179,6 @@ def update_actuals(df: pd.DataFrame) -> int:
 
 
 def backfill_actuals(holding_period: int = 20) -> int:
-    from src.config import Config
-    from src.data.collector import OHLCVCollector
-
     conn = get_conn()
     pending = pd.read_sql_query(
         "SELECT signal_date, ticker FROM signals WHERE (signal_date, ticker) NOT IN (SELECT signal_date, ticker FROM actuals)",
@@ -177,55 +189,12 @@ def backfill_actuals(holding_period: int = 20) -> int:
         log.info("No pending signals to backfill")
         return 0
 
-    config = Config()
-    collector = OHLCVCollector(config)
-    bm = collector.fetch("VNINDEX", days=365)
-    bm_sorted = bm.sort_values("date")[["date", "close"]].rename(columns={"close": "bm_close"})
-    bm_dict = dict(zip(bm_sorted["date"].dt.strftime("%Y-%m-%d"), bm_sorted["bm_close"]))
+    from src.actuals import calculate_actuals
 
-    # Cache per-ticker fetches (avoid O(N²) HTTP calls for repeat tickers)
-    price_cache: dict[str, pd.DataFrame] = {}
-    def _get_prices(tk: str) -> pd.DataFrame:
-        if tk not in price_cache:
-            price_cache[tk] = collector.fetch(tk, days=365).sort_values("date")
-        return price_cache[tk]
-
-    actuals: list[dict] = []
-    for _, row in pending.iterrows():
-        sd = row["signal_date"]
-        tk = row["ticker"]
-        try:
-            df_sorted = _get_prices(tk)
-            dates = df_sorted["date"].dt.strftime("%Y-%m-%d").tolist()
-            if sd not in dates:
-                continue
-            idx = dates.index(sd)
-            if idx + holding_period >= len(dates):
-                continue
-            close_now = df_sorted.iloc[idx]["close"]
-            close_future = df_sorted.iloc[idx + holding_period]["close"]
-            bm_now = bm_dict.get(sd)
-            bm_future = bm_dict.get(dates[idx + holding_period])
-            if bm_now is None or bm_future is None:
-                continue
-            stock_ret = (close_future - close_now) / close_now
-            bm_ret = (bm_future - bm_now) / bm_now
-            excess = stock_ret - bm_ret
-            actuals.append({
-                "signal_date": sd,
-                "ticker": tk,
-                # Keep _5d name for backwards compat with dashboard SQL/dashboard
-                "actual_excess_return_5d": excess,
-                "actual_excess_return": excess,
-                "actual_outperform": 1 if excess > 0 else 0,
-                "realized_date": dates[idx + holding_period],
-            })
-        except Exception as e:
-            log.warning("Backfill error for %s %s: %s", sd, tk, e)
-
-    if not actuals:
+    actuals = calculate_actuals(pending, holding_period=holding_period)
+    if actuals.empty:
         return 0
-    update_actuals(pd.DataFrame(actuals))
+    update_actuals(actuals)
     return len(actuals)
 
 

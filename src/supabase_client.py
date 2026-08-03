@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any
 
+import pandas as pd
 import requests
 
 from src.config import Config
@@ -19,11 +21,22 @@ class SupabaseConfig:
 
     @classmethod
     def from_env(cls) -> SupabaseConfig | None:
-        url = Config.supabase_url
-        anon = Config.supabase_anon_key
+        url = Config.supabase_url or _streamlit_secret("SUPABASE_URL")
+        anon = Config.supabase_anon_key or _streamlit_secret("SUPABASE_ANON_KEY")
         if not url or not anon:
             return None
-        return cls(url=url, anon_key=anon, service_key=Config.supabase_service_key)
+        service_key = Config.supabase_service_key or _streamlit_secret("SUPABASE_SERVICE_KEY")
+        return cls(url=url, anon_key=anon, service_key=service_key)
+
+
+def _streamlit_secret(name: str) -> str | None:
+    """Read a Streamlit secret without making Streamlit a CLI requirement."""
+    try:
+        import streamlit as st
+        value = st.secrets.get(name)
+        return str(value) if value else None
+    except Exception:
+        return None
 
 
 class SupabaseClient:
@@ -33,6 +46,8 @@ class SupabaseClient:
 
     def _headers(self, use_service: bool = False) -> dict[str, str]:
         key = self.cfg.service_key if use_service else self.cfg.anon_key
+        if use_service and not key:
+            raise RuntimeError("SUPABASE_SERVICE_KEY is required for cloud sync")
         return {
             "apikey": self.cfg.anon_key,
             "Authorization": f"Bearer {key}",
@@ -46,19 +61,21 @@ class SupabaseClient:
         params = {}
         if on_conflict:
             params["on_conflict"] = on_conflict
-        resp = requests.post(
-            f"{self.base}/{table}",
-            headers={**self._headers(use_service=True), "Prefer": "resolution=merge-duplicates"},
-            params=params,
-            json=rows,
-            timeout=15,
-        )
-        if resp.status_code in (200, 201):
+        try:
+            resp = requests.post(
+                f"{self.base}/{table}",
+                headers={**self._headers(use_service=True), "Prefer": "resolution=merge-duplicates"},
+                params=params,
+                json=rows,
+                timeout=15,
+            )
+        except requests.RequestException as exc:
+            raise RuntimeError(f"Supabase upsert {table} request failed") from exc
+        if resp.status_code in (200, 201, 204):
             inserted = len(resp.json()) if resp.content else len(rows)
             log.info("Synced %d rows to supabase.%s", inserted, table)
             return inserted
-        log.warning("Supabase upsert %s failed: %s %s", table, resp.status_code, resp.text[:200])
-        return 0
+        raise RuntimeError(f"Supabase upsert {table} failed: {resp.status_code} {resp.text[:200]}")
 
     def _exec_sql(self, sql: str) -> bool:
         """Execute raw SQL via Supabase SQL endpoint (needs service_role key)."""
@@ -184,12 +201,59 @@ class SupabaseClient:
         ]
         return self._upsert("actuals", data, on_conflict="signal_date,ticker")
 
+    def backfill_remote_actuals(self, holding_period: int = 20) -> int:
+        """Realize old cloud signals using the current run's raw market data.
+
+        GitHub Actions does not restore the ignored SQLite file between runs,
+        so historical signals must be read from Supabase before calculating
+        their T+20 outcomes.
+        """
+        signals = self._query("signals", {
+            "select": "signal_date,ticker",
+            "order": "signal_date.asc",
+            "limit": "5000",
+        })
+        if not signals:
+            return 0
+        actuals = self._query("actuals", {
+            "select": "signal_date,ticker",
+            "order": "signal_date.asc",
+            "limit": "5000",
+        })
+        realized_keys = {
+            (str(row.get("signal_date", ""))[:10], str(row.get("ticker", "")))
+            for row in actuals
+        }
+        pending = [
+            row for row in signals
+            if (str(row.get("signal_date", ""))[:10], str(row.get("ticker", "")))
+            not in realized_keys
+        ]
+        if not pending:
+            return 0
+
+        from src.actuals import calculate_actuals
+        calculated = calculate_actuals(pending, holding_period=holding_period)
+        if calculated.empty:
+            return 0
+        rows = [
+            {
+                "signal_date": str(row["signal_date"]),
+                "ticker": row["ticker"],
+                "actual_excess_return_5d": float(row["actual_excess_return_5d"]),
+                "actual_outperform": int(row["actual_outperform"]),
+                "realized_date": str(row["realized_date"]),
+            }
+            for row in calculated.to_dict("records")
+        ]
+        return self._upsert("actuals", rows, on_conflict="signal_date,ticker")
+
     def sync_pipeline_runs(self) -> int:
         from src.database import get_conn
         conn = get_conn()
         rows = conn.execute(
             "SELECT run_date, accuracy, precision, recall, f1, roc_auc, status "
-            "FROM pipeline_runs ORDER BY id"
+            "FROM pipeline_runs ORDER BY id DESC LIMIT 1"
         ).fetchall()
         conn.close()
         if not rows:
@@ -236,6 +300,7 @@ class SupabaseClient:
     def sync_all(self) -> dict[str, int]:
         counts = {}
         counts["signals"] = self.sync_signals()
+        counts["remote_actuals"] = self.backfill_remote_actuals()
         counts["actuals"] = self.sync_actuals()
         counts["pipeline_runs"] = self.sync_pipeline_runs()
         counts["strategy_performance"] = self.sync_strategy_performance()
@@ -303,13 +368,37 @@ class SupabaseClient:
         })
 
     def get_performance_summary(self) -> list[dict[str, Any]]:
-        return self._query("actuals", {
+        actuals = self._query("actuals", {
             "select": "signal_date,ticker,actual_excess_return_5d,actual_outperform",
             "order": "signal_date.desc",
             "limit": "500",
         })
+        if not actuals:
+            return []
+
+        df = pd.DataFrame(actuals)
+        df["actual_excess_return_5d"] = pd.to_numeric(
+            df["actual_excess_return_5d"], errors="coerce"
+        )
+        df["actual_outperform"] = pd.to_numeric(df["actual_outperform"], errors="coerce")
+        df = df.dropna(subset=["actual_excess_return_5d", "actual_outperform"])
+        if df.empty:
+            return []
+        summary = (
+            df.groupby("signal_date", as_index=False)
+            .agg(
+                total_picks=("ticker", "count"),
+                wins=("actual_outperform", "sum"),
+                avg_excess_return=("actual_excess_return_5d", "mean"),
+                total_excess_return=("actual_excess_return_5d", "sum"),
+            )
+            .sort_values("signal_date", ascending=False)
+        )
+        summary["win_rate"] = summary["wins"] / summary["total_picks"]
+        return summary.where(pd.notna(summary), None).to_dict(orient="records")
 
 
+@lru_cache(maxsize=1)
 def get_client() -> SupabaseClient | None:
     cfg = SupabaseConfig.from_env()
     if cfg is None:

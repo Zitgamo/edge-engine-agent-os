@@ -46,3 +46,13 @@ def test_uses_stale_parquet_when_refresh_fails(monkeypatch, tmp_path) -> None:
 
     assert result is not None
     assert result["date"].max() == stale_dates[-1]
+
+
+def test_summary_averages_overlapping_cohorts_instead_of_compounding() -> None:
+    result = realtime.get_signal_summary([
+        {"signal_date": "2026-07-01", "status": "HIT_TP", "pnl": 1.0, "weight": 1.0},
+        {"signal_date": "2026-07-02", "status": "HIT_SL", "pnl": -0.5, "weight": 1.0},
+    ])
+
+    assert result["portfolio_pnl"] == 0.25
+    assert result["total_pnl"] == 0.25

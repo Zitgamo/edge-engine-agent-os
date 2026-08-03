@@ -1,22 +1,21 @@
 from __future__ import annotations
 
 import logging
-from datetime import date
 
-import numpy as np
 import pandas as pd
 
 from src.database import get_conn
+from src.strategies.accumulation import AccumulationStrategy
 from src.strategies.base import Strategy
+from src.strategies.breakout import BreakoutStrategy
+from src.strategies.defensive import DefensiveStrategy
+from src.strategies.fundamental_value import FundamentalValueStrategy
+from src.strategies.mean_reversion import MeanReversionStrategy
+from src.strategies.momentum import MomentumStrategy
 from src.strategies.outperform import OutperformStrategy
 from src.strategies.rs_momentum import RSMomentumStrategy
-from src.strategies.mean_reversion import MeanReversionStrategy
-from src.strategies.fundamental_value import FundamentalValueStrategy
-from src.strategies.momentum import MomentumStrategy
-from src.strategies.breakout import BreakoutStrategy
 from src.strategies.rsi import RSIStrategy
-from src.strategies.defensive import DefensiveStrategy
-from src.strategies.accumulation import AccumulationStrategy
+from src.time_utils import today_vn
 
 log = logging.getLogger(__name__)
 
@@ -75,9 +74,14 @@ class StrategyManager:
         results["_ensemble"] = ensemble
         return results
 
-    def save_signals(self, rankings: dict[str, pd.DataFrame], n: int = 5) -> None:
+    def save_signals(
+        self,
+        rankings: dict[str, pd.DataFrame],
+        n: int = 5,
+        signal_date: str | None = None,
+    ) -> None:
         conn = get_conn()
-        sig_date = date.today().isoformat()
+        sig_date = signal_date or today_vn().isoformat()
         conn.execute("DELETE FROM strategy_performance WHERE signal_date = ?", (sig_date,))
         rows = []
         for strat_name, ranking in rankings.items():

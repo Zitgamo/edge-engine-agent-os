@@ -15,18 +15,21 @@ class ModelEvaluator:
     def evaluate(self, model: xgb.XGBClassifier, df: pd.DataFrame, target_col: str | None = None) -> dict[str, float]:
         col = target_col or TARGET_COL
         df = df.dropna(subset=FEATURE_COLS + [col]).copy()
+        if df.empty:
+            raise ValueError(f"No rows available to evaluate target {col}")
         X = df[FEATURE_COLS]
         y = df[col]
 
         y_pred = model.predict(X)
         y_prob = model.predict_proba(X)[:, 1]
 
+        roc_auc = roc_auc_score(y, y_prob) if y.nunique() > 1 else 0.5
         metrics = {
             "accuracy": accuracy_score(y, y_pred),
             "precision": precision_score(y, y_pred, zero_division=0),
             "recall": recall_score(y, y_pred, zero_division=0),
             "f1": f1_score(y, y_pred, zero_division=0),
-            "roc_auc": roc_auc_score(y, y_prob),
+            "roc_auc": roc_auc,
         }
 
         log.info("Evaluation metrics: %s", metrics)

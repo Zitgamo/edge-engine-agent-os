@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 
+import numpy as np
 import pandas as pd
 
 log = logging.getLogger(__name__)
@@ -24,11 +25,18 @@ class OutperformanceLabel:
         merged["stock_ret"] = (merged["stock_future"] - merged["close"]) / merged["close"]
         merged["bm_ret"] = (merged["bm_future"] - merged["bm_close"]) / merged["bm_close"]
 
-        merged[f"outperform_{horizon}d"] = (merged["stock_ret"] > merged["bm_ret"]).astype(int)
+        label_col = f"outperform_{horizon}d"
+        excess_col = f"excess_return_{horizon}d"
+        valid = merged[["close", "bm_close", "stock_future", "bm_future"]].notna().all(axis=1)
+        valid &= merged["close"].ne(0) & merged["bm_close"].ne(0)
+
+        merged[label_col] = np.nan
+        merged.loc[valid, label_col] = (merged.loc[valid, "stock_ret"] > merged.loc[valid, "bm_ret"]).astype(float)
         merged[f"excess_return_{horizon}d"] = merged["stock_ret"] - merged["bm_ret"]
+        merged.loc[~valid, excess_col] = np.nan
 
         result = stock_df.merge(
-            merged[["date", "ticker", f"outperform_{horizon}d", f"excess_return_{horizon}d"]],
+            merged[["date", "ticker", label_col, excess_col]],
             on=["date", "ticker"],
             how="left",
         )

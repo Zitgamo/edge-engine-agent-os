@@ -34,3 +34,10 @@ class TestOutperformanceLabel:
     def test_label_is_binary(self, stock_df: pd.DataFrame, benchmark_df: pd.DataFrame) -> None:
         result = OutperformanceLabel().compute(stock_df, benchmark_df).dropna()
         assert result["outperform_5d"].isin([0, 1]).all()
+
+    def test_unrealized_tail_is_missing_not_a_loss(
+        self, stock_df: pd.DataFrame, benchmark_df: pd.DataFrame
+    ) -> None:
+        result = OutperformanceLabel().compute(stock_df, benchmark_df, horizon=5)
+        assert result["outperform_5d"].tail(5).isna().all()
+        assert result["excess_return_5d"].tail(5).isna().all()

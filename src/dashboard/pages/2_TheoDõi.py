@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import sys
 from pathlib import Path
 
@@ -15,6 +14,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 
 from src.dashboard.style import CUSTOM_CSS
+from src.time_utils import today_vn
 
 log = logging.getLogger(__name__)
 
@@ -22,14 +22,12 @@ st.set_page_config(page_title="Theo Dõi", page_icon="📊", layout="wide")
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
 
+@st.cache_data(ttl=300, max_entries=2)
 def load_data():
-    use_cloud = os.getenv("SUPABASE_URL") and os.getenv("SUPABASE_ANON_KEY")
     try:
-        if use_cloud:
-            from src.supabase_client import get_client
-            client = get_client()
-            if not client:
-                return pd.DataFrame()
+        from src.supabase_client import get_client
+        client = get_client()
+        if client:
             raw = client.get_performance_summary()
             return pd.DataFrame(raw) if raw else pd.DataFrame()
         else:
@@ -89,7 +87,7 @@ fig1.update_layout(
 )
 fig1.update_xaxes(gridcolor="#1A1D29")
 fig1.update_yaxes(gridcolor="#1A1D29", range=[0, 1])
-st.plotly_chart(fig1, use_container_width=True)
+st.plotly_chart(fig1, width="stretch")
 
 # Cumulative Excess Return
 st.markdown('<div class="section-title">CUMULATIVE EXCESS RETURN</div>', unsafe_allow_html=True)
@@ -116,7 +114,7 @@ fig2.update_layout(
 )
 fig2.update_xaxes(gridcolor="#1A1D29")
 fig2.update_yaxes(gridcolor="#1A1D29")
-st.plotly_chart(fig2, use_container_width=True)
+st.plotly_chart(fig2, width="stretch")
 
 # Daily breakdown
 st.markdown('<div class="section-title">DAILY BREAKDOWN</div>', unsafe_allow_html=True)
@@ -128,19 +126,18 @@ daily = daily.rename(columns={
     "signal_date": "Date", "total_picks": "Picks", "wins": "Wins",
     "win_rate": "Win Rate", "avg_excess_return": "Avg Return",
 })
-st.dataframe(daily, use_container_width=True, hide_index=True)
+st.dataframe(daily, width="stretch", hide_index=True)
 
 # === REALTIME TRACKING ===
 st.markdown('<div class="section-title">REALTIME SIGNAL TRACKING</div>', unsafe_allow_html=True)
 
 try:
-    from src.tracking.realtime import track_signal, get_signal_summary
+    from src.tracking.realtime import get_signal_summary, track_signals
 
     # Load signals from either source
-    use_cloud = os.getenv("SUPABASE_URL") and os.getenv("SUPABASE_ANON_KEY")
-    if use_cloud:
-        from src.supabase_client import get_client
-        client = get_client()
+    from src.supabase_client import get_client
+    client = get_client()
+    if client:
         sigs_raw = client.get_signals(limit=100) if client else []
         sigs = pd.DataFrame(sigs_raw) if sigs_raw else pd.DataFrame()
     else:
@@ -148,19 +145,8 @@ try:
         sigs = get_signals(limit=100)
 
     if not sigs.empty:
-        from datetime import date as dt_date
-        import time as _t
-        past = sigs[sigs["signal_date"] != str(dt_date.today())].head(30)
-        results = []
-        for i, (_, r) in enumerate(past.iterrows()):
-            if i > 0:
-                _t.sleep(0.25)
-            result = track_signal(
-                r["ticker"], str(r["signal_date"])[:10],
-                stop_loss=float(r.get("stop_loss", -0.03)),
-                take_profit=float(r.get("take_profit", 0.08)),
-            )
-            results.append(result)
+        past = sigs[sigs["signal_date"] != str(today_vn())].head(100)
+        results = track_signals(past.to_dict("records"))
 
         if results:
             summary = get_signal_summary(results)
@@ -170,7 +156,7 @@ try:
             c3.metric("Hit SL", summary["hit_sl"])
             c4.metric("Active", summary["active"])
             c5.metric("Win Rate", f"{summary['win_rate']:.0f}%")
-            c6.metric("Portfolio P&L", f"{summary['total_pnl']:+.2%}")
+            c6.metric("Weighted basket P&L", f"{summary['total_pnl']:+.2%}")
 
             # Table
             rows = []
@@ -192,7 +178,7 @@ try:
             df_rt = pd.DataFrame(rows)
             df_rt["P&L"] = df_rt["P&L"].apply(lambda x: f"{x:+.2%}")
             df_rt["Entry"] = df_rt["Entry"].apply(lambda x: f"{x:,.0f}")
-            st.dataframe(df_rt, use_container_width=True, hide_index=True)
+            st.dataframe(df_rt, width="stretch", hide_index=True)
 except Exception as e:
     st.caption(f"Realtime tracking unavailable: {e}")
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from itertools import product
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -9,26 +10,90 @@ import xgboost as xgb
 
 from src.config import Config
 from src.database import get_conn, init_db
-from src.model.inference import ModelInference
 from src.model.schema import FEATURE_COLS, TARGET_COL, XGBOOST_PARAMS
 
 log = logging.getLogger(__name__)
 
 
-def backtest_sltp(sl_levels: list[float] = None, tp_levels: list[float] = None) -> pd.DataFrame:
+def _load_backtest_prices(ticker: str, cache: dict[str, pd.DataFrame]) -> pd.DataFrame:
+    if ticker in cache:
+        return cache[ticker]
+    path = Path("data/raw") / f"{ticker}_raw.parquet"
+    if not path.exists():
+        cache[ticker] = pd.DataFrame()
+        return cache[ticker]
+    prices = pd.read_parquet(path).copy()
+    prices["date"] = pd.to_datetime(prices["date"], errors="coerce").dt.normalize()
+    prices = prices.dropna(subset=["date", "close"]).drop_duplicates("date").sort_values("date")
+    cache[ticker] = prices.reset_index(drop=True)
+    return cache[ticker]
+
+
+def _sltp_excess_return(
+    ticker: str,
+    signal_date: str,
+    stop_loss: float,
+    take_profit: float,
+    holding_period: int,
+    prices_cache: dict[str, pd.DataFrame],
+) -> float | None:
+    """Apply SL/TP to raw OHLC bars, then subtract benchmark return."""
+    stock = _load_backtest_prices(ticker, prices_cache)
+    benchmark = _load_backtest_prices("VNINDEX", prices_cache)
+    if stock.empty or benchmark.empty:
+        return None
+    dates = stock["date"].dt.strftime("%Y-%m-%d").tolist()
+    if signal_date not in dates:
+        return None
+    idx = dates.index(signal_date)
+    future = stock.iloc[idx + 1: idx + 1 + holding_period]
+    if future.empty:
+        return None
+
+    entry = float(stock.iloc[idx]["close"])
+    exit_price = float(future.iloc[-1]["close"])
+    exit_date = str(future.iloc[-1]["date"])[:10]
+    for held, row in enumerate(future.itertuples(index=False), start=1):
+        if held < 2:
+            continue
+        low = float(row.low)
+        high = float(row.high)
+        if stop_loss < 0 and low <= entry * (1 + stop_loss):
+            exit_price = entry * (1 + stop_loss)
+            exit_date = str(row.date)[:10]
+            break
+        if take_profit > 0 and high >= entry * (1 + take_profit):
+            exit_price = entry * (1 + take_profit)
+            exit_date = str(row.date)[:10]
+            break
+        exit_price = float(row.close)
+        exit_date = str(row.date)[:10]
+
+    bm = benchmark.set_index(benchmark["date"].dt.strftime("%Y-%m-%d"))["close"]
+    if signal_date not in bm.index or exit_date not in bm.index or float(bm.loc[signal_date]) == 0:
+        return None
+    stock_return = (exit_price - entry) / entry
+    benchmark_return = (float(bm.loc[exit_date]) - float(bm.loc[signal_date])) / float(bm.loc[signal_date])
+    return stock_return - benchmark_return
+
+
+def backtest_sltp(
+    sl_levels: list[float] | None = None,
+    tp_levels: list[float] | None = None,
+    holding_period: int = 20,
+) -> pd.DataFrame:
     sl_levels = sl_levels or [0.0, -0.01, -0.02, -0.03, -0.05]
     tp_levels = tp_levels or [0.0, 0.02, 0.03, 0.05, 0.08, 0.10]
 
-    df = pd.read_parquet("data/processed/features.parquet")
-    if "score" not in df.columns:
-        inf = ModelInference(Config())
-        inf.load()
-        df = inf.predict(df)
-
-    df = df.dropna(subset=["score", "excess_return_5d"]).sort_values("date")
+    df = walk_forward_ensemble_predictions()
+    if df.empty:
+        log.warning("No out-of-sample predictions available for SL/TP backtest")
+        return pd.DataFrame()
+    df = df.rename(columns={"ensemble_score": "score"}).dropna(subset=["score"]).sort_values("date")
     dates = sorted(df["date"].unique())
     split_idx = int(len(dates) * 0.6)
     test_dates = dates[split_idx:]
+    prices_cache: dict[str, pd.DataFrame] = {}
 
     results = []
     for sl, tp in product(sl_levels, tp_levels):
@@ -38,10 +103,20 @@ def backtest_sltp(sl_levels: list[float] = None, tp_levels: list[float] = None) 
             picks = day.sort_values("score", ascending=False).head(3)
             if picks.empty:
                 continue
-            rets = picks["excess_return_5d"].values
-            sl_val = np.where(rets <= sl, sl, rets) if sl < 0 else rets
-            tp_val = np.where(sl_val >= tp, tp, sl_val) if tp > 0 else sl_val
-            daily_rets.append(tp_val.mean())
+            returns = [
+                _sltp_excess_return(
+                    str(row.ticker),
+                    pd.Timestamp(d).date().isoformat(),
+                    sl,
+                    tp,
+                    holding_period,
+                    prices_cache,
+                )
+                for row in picks.itertuples(index=False)
+            ]
+            returns = [value for value in returns if value is not None]
+            if returns:
+                daily_rets.append(float(np.mean(returns)))
 
         rets = pd.Series(daily_rets)
         if len(rets) < 10:
@@ -61,7 +136,10 @@ def backtest_sltp(sl_levels: list[float] = None, tp_levels: list[float] = None) 
             "sharpe": sharpe, "max_dd": max_dd,
         })
 
-    res = pd.DataFrame(results).sort_values("sharpe", ascending=False)
+    res = pd.DataFrame(results)
+    if res.empty:
+        return res
+    res = res.sort_values("sharpe", ascending=False)
     print(f"{'SL':>7} | {'TP':>7} | {'Days':>5} | {'WinRate':>8} | {'AvgRet':>9} | {'CumRet':>10} | {'Sharpe':>7} | {'MaxDD':>7}")
     print("=" * 75)
     for _, r in res.iterrows():
@@ -109,18 +187,64 @@ def ensemble_predict(models: dict[int, xgb.XGBClassifier]) -> pd.DataFrame:
     return result
 
 
-def backtest_ensemble() -> None:
-    models = train_ensemble_models()
-    df = ensemble_predict(models)
-    df = df.dropna(subset=[f"score_{h}d" for h in models] + [f"excess_return_{h}d" for h in models])
+def walk_forward_ensemble_predictions(min_train_dates: int = 60) -> pd.DataFrame:
+    """Generate strictly out-of-sample ensemble scores one date at a time."""
+    df = pd.read_parquet("data/processed/features.parquet").sort_values("date")
+    horizons = [
+        h for h in [1, 5, 10, 20]
+        if f"outperform_{h}d" in df.columns and f"excess_return_{h}d" in df.columns
+    ]
+    dates = sorted(df["date"].dropna().unique())
+    if len(dates) <= min_train_dates or not horizons:
+        return pd.DataFrame()
+
+    predictions: list[pd.DataFrame] = []
+    for test_date in dates[min_train_dates:]:
+        train = df[df["date"] < test_date]
+        test = df[df["date"] == test_date].copy()
+        score_cols: list[str] = []
+        for horizon in horizons:
+            target = f"outperform_{horizon}d"
+            train_clean = train.dropna(subset=FEATURE_COLS + [target])
+            if len(train_clean) < 100 or train_clean[target].nunique() < 2:
+                continue
+            model = xgb.XGBClassifier(**XGBOOST_PARAMS)
+            try:
+                model.fit(train_clean[FEATURE_COLS], train_clean[target], verbose=False)
+            except ValueError as exc:
+                log.warning("Walk-forward model failed for %s T+%d: %s", test_date, horizon, exc)
+                continue
+            score_col = f"score_{horizon}d"
+            test[score_col] = model.predict_proba(test[FEATURE_COLS].fillna(0))[:, 1]
+            score_cols.append(score_col)
+
+        if score_cols:
+            test["ensemble_score"] = test[score_cols].mean(axis=1)
+            test["ensemble_max"] = test[score_cols].max(axis=1)
+            predictions.append(test)
+
+    return pd.concat(predictions, ignore_index=True) if predictions else pd.DataFrame()
+
+
+def backtest_ensemble(min_train_dates: int = 60) -> pd.DataFrame:
+    """Evaluate the ensemble on dates whose models were trained beforehand."""
+    df = walk_forward_ensemble_predictions(min_train_dates=min_train_dates)
+    if df.empty:
+        log.warning("No out-of-sample ensemble predictions available")
+        return pd.DataFrame()
+    models = {
+        h for h in [1, 5, 10, 20]
+        if f"score_{h}d" in df.columns and f"excess_return_{h}d" in df.columns
+    }
 
     results = []
     for method, col in [("mean", "ensemble_score"), ("max", "ensemble_max")]:
         for h in models:
             for n in [1, 3, 5]:
                 daily_rets = []
-                for d in sorted(df["date"].unique()):
-                    day = df[df["date"] == d]
+                usable = df.dropna(subset=[col, f"excess_return_{h}d"])
+                for d in sorted(usable["date"].unique()):
+                    day = usable[usable["date"] == d]
                     picks = day.sort_values(col, ascending=False).head(n)
                     if picks.empty:
                         continue
@@ -134,13 +258,18 @@ def backtest_ensemble() -> None:
                     "avg_return": rets.mean(),
                     "cum_return": (1 + rets).prod() - 1,
                     "sharpe": (rets.mean() / rets.std() * np.sqrt(252 / h)) if rets.std() > 0 else 0.0,
+                    "max_dd": (((1 + rets).cumprod() / (1 + rets).cumprod().cummax()) - 1).min(),
                 })
 
-    res = pd.DataFrame(results).sort_values("sharpe", ascending=False)
+    res = pd.DataFrame(results)
+    if res.empty:
+        return res
+    res = res.sort_values("sharpe", ascending=False)
     print(f"{'Method':>6} | {'H':>3} | {'N':>3} | {'Days':>5} | {'WinRate':>8} | {'AvgRet':>9} | {'CumRet':>10} | {'Sharpe':>7}")
     print("=" * 75)
     for _, r in res.iterrows():
         print(f"{r['method']:>6} | T+{r['horizon']:<1} | {r['n']:>3} | {r['days']:>5} | {r['win_rate']:>7.1%} | {r['avg_return']:>+8.2%} | {r['cum_return']:>+9.2%} | {r['sharpe']:>+6.2f}")
+    return res
 
 
 def auto_retrain() -> dict[str, float]:
@@ -154,26 +283,27 @@ def auto_retrain() -> dict[str, float]:
     last_date = conn.execute("SELECT MAX(signal_date) FROM signals").fetchone()[0]
     conn.close()
 
-    old_model = xgb.XGBClassifier()
-    try:
-        old_model.load_model(str(Config().model_path))
-        X_old = df[FEATURE_COLS].fillna(0)
-        y_old = old_model.predict(X_old)
-        old_acc = (y_old == df[TARGET_COL]).mean()
-    except Exception:
-        old_acc = 0.0
-
     split = int(len(dates) * 0.8)
     train_dates = set(dates[:split])
     test_dates = dates[split:]
 
     train = df[df["date"].isin(train_dates)]
     test = df[df["date"].isin(test_dates)]
+    if train.empty or test.empty:
+        raise ValueError("Not enough dated rows for auto-retrain evaluation")
+
+    old_model = xgb.XGBClassifier()
+    try:
+        old_model.load_model(str(Config().model_path))
+        y_old = old_model.predict(test[FEATURE_COLS].fillna(0))
+        old_acc = (y_old == test[TARGET_COL]).mean()
+    except Exception:
+        old_acc = 0.0
 
     model_new = xgb.XGBClassifier(**XGBOOST_PARAMS)
     model_new.fit(train[FEATURE_COLS], train[TARGET_COL], verbose=False)
 
-    y_pred = model_new.predict(test[FEATURE_COLS])
+    y_pred = model_new.predict(test[FEATURE_COLS].fillna(0))
     new_acc = (y_pred == test[TARGET_COL]).mean()
     improvement = new_acc - old_acc
 
@@ -252,6 +382,10 @@ def backtest_score_validation(min_train_dates: int = 60) -> None:
     bot_ret = pd.Series(bot_results)
     spread = pd.Series(spread_results)
 
+    def _max_drawdown(returns: pd.Series) -> float:
+        equity = (1 + returns).cumprod()
+        return float((equity / equity.cummax() - 1).min())
+
     print("\n" + "=" * 75)
     print("  WALK-FORWARD BACKTEST: TOP 3 vs BOTTOM 3 (T+5 excess return)")
     print("=" * 75)
@@ -264,7 +398,7 @@ def backtest_score_validation(min_train_dates: int = 60) -> None:
     print(f"  {'Avg Return':<25} {top_ret.mean():>+11.2%} {bot_ret.mean():>+11.2%} {spread.mean():>+11.2%}")
     print(f"  {'Cum Return':<25} {(1+top_ret).prod()-1:>+11.2%} {(1+bot_ret).prod()-1:>+11.2%} {(1+spread).prod()-1:>+11.2%}")
     print(f"  {'Sharpe (ann)':<25} {top_ret.mean()/top_ret.std()*np.sqrt(252):>+11.2f} {bot_ret.mean()/bot_ret.std()*np.sqrt(252):>+11.2f} {spread.mean()/spread.std()*np.sqrt(252):>+11.2f}")
-    print(f"  {'Max Drawdown':<25} {top_ret.min():>11.2%} {bot_ret.min():>11.2%} {spread.min():>11.2%}")
+    print(f"  {'Max Drawdown':<25} {_max_drawdown(top_ret):>11.2%} {_max_drawdown(bot_ret):>11.2%} {_max_drawdown(spread):>11.2%}")
     print()
 
 

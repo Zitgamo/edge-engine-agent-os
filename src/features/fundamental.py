@@ -231,25 +231,29 @@ class HistoricalFundamentalFeatures:
         return result
 
 
-def add_fundamental_features(df: pd.DataFrame) -> pd.DataFrame:
+def add_fundamental_features(df: pd.DataFrame, latest_only: bool = True) -> pd.DataFrame:
+    """Attach current fundamentals for ranking without backfilling history.
+
+    Yahoo ``Ticker.info`` is a current snapshot, not a point-in-time history.
+    Applying it to every historical row would leak today's information into
+    backtests.  The production pipeline therefore exposes it only on the
+    latest market date, where the standalone value strategies use it; the ML
+    model does not include these columns at all.
+    """
     ff = FundamentalFeatures()
     tickers = df["ticker"].unique()
     funda_map: dict[str, dict[str, float]] = {}
     for t in tickers:
         funda_map[t] = ff.compute_ticker_features(t)
 
-    rows = []
-    for _, row in df.iterrows():
-        r = row.to_dict()
-        funda = funda_map.get(row["ticker"], {})
-        for col in FUNDA_FEATURE_COLS:
-            r[col] = funda.get(col, 0.0)
-        rows.append(r)
-
-    result = pd.DataFrame(rows)
+    result = df.copy()
+    latest_date = result["date"].max() if latest_only else None
     for col in FUNDA_FEATURE_COLS:
-        median_val = result[col].median()
-        result[col] = result[col].fillna(median_val)
+        result[col] = result["ticker"].map(
+            {ticker: values.get(col, np.nan) for ticker, values in funda_map.items()}
+        )
+        if latest_only:
+            result.loc[result["date"] != latest_date, col] = np.nan
 
     log.info("Added fundamental features: %s", FUNDA_FEATURE_COLS)
     return result

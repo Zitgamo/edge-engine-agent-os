@@ -3,18 +3,18 @@ from __future__ import annotations
 import glob
 import logging
 import os
-from datetime import date
 from typing import Any
 
 import numpy as np
 import pandas as pd
 
 from src.config import Config
+from src.time_utils import today_vn
 
 log = logging.getLogger(__name__)
 
 # Session-level cache: avoids re-fetching the same ticker from yfinance (rate-limit protection)
-_stock_cache: dict[tuple[str, str], pd.DataFrame | None] = {}
+_stock_cache: dict[tuple[str, str, str], pd.DataFrame | None] = {}
 
 
 def _normalize_stock_data(df: pd.DataFrame) -> pd.DataFrame:
@@ -53,7 +53,7 @@ def load_stock_data(ticker: str, data_dir: str | None = None) -> pd.DataFrame | 
     """Load raw OHLCV data for a ticker — parquet first, yfinance fallback (cached)."""
     if data_dir is None:
         data_dir = str(Config.raw_data_dir)
-    cache_key = (str(data_dir), ticker)
+    cache_key = (str(data_dir), ticker, today_vn().isoformat())
     if cache_key in _stock_cache:
         return _stock_cache[cache_key]
 
@@ -64,7 +64,7 @@ def load_stock_data(ticker: str, data_dir: str | None = None) -> pd.DataFrame | 
         try:
             parquet_df = _normalize_stock_data(pd.read_parquet(files[0]))
             latest_date = parquet_df["date"].max()
-            if latest_date >= pd.Timestamp(date.today()):
+            if latest_date >= pd.Timestamp(today_vn()):
                 _stock_cache[cache_key] = parquet_df
                 return parquet_df
             log.info(
@@ -100,6 +100,7 @@ def simulate_holding(
     take_profit: float,
     holding_period: int = 20,
     settlement_delay: int = 2,
+    round_trip_cost: float = 0.0,
 ) -> dict[str, Any]:
     """Simulate the holding period for a signal (VN market rules).
 
@@ -143,7 +144,7 @@ def simulate_holding(
         high = float(row["high"])
         low = float(row["low"])
         close = float(row["close"])
-        current_date = str(row["date"])[:10] if hasattr(row["date"], "strftime") else str(row["date"])[:10]
+        current_date = str(row["date"])[:10]
 
         max_high = max(max_high, high)
         min_low = min(min_low, low)
@@ -177,7 +178,8 @@ def simulate_holding(
     if status == "ACTIVE" and days_held >= holding_period:
         status = "EXPIRED"
 
-    pnl = (exit_price - entry_price) / entry_price if exit_price else 0.0
+    gross_pnl = (exit_price - entry_price) / entry_price if exit_price else 0.0
+    pnl = gross_pnl - round_trip_cost
 
     return {
         "status": status,
@@ -185,6 +187,8 @@ def simulate_holding(
         "exit_price": exit_price,
         "exit_date": exit_date,
         "pnl": round(pnl, 4),
+        "gross_pnl": round(gross_pnl, 4),
+        "transaction_cost": round(round_trip_cost, 4),
         "days_held": days_held,
         "high_during_hold": round(max_high, 2),
         "low_during_hold": round(min_low, 2),
@@ -200,6 +204,8 @@ def track_signal(
     take_profit: float = 0.08,
     holding_period: int = 20,
     settlement_delay: int = 2,
+    round_trip_cost: float = 0.0,
+    weight: float | None = None,
     data_dir: str | None = None,
 ) -> dict[str, Any]:
     """Track a single signal's realtime P&L.
@@ -209,35 +215,88 @@ def track_signal(
     """
     df = load_stock_data(ticker, data_dir)
     if df is None:
-        return {"ticker": ticker, "signal_date": signal_date, "status": "NO_DATA", "pnl": 0.0, "days_held": 0}
+        return {
+            "ticker": ticker,
+            "signal_date": signal_date,
+            "status": "NO_DATA",
+            "pnl": 0.0,
+            "days_held": 0,
+            "weight": weight,
+        }
 
     if entry_price is None:
         dates_list = df["date"].dt.strftime("%Y-%m-%d").tolist() if hasattr(df["date"], "dt") else list(df["date"].astype(str))
         if signal_date not in dates_list:
-            return {"ticker": ticker, "signal_date": signal_date, "status": "NO_DATA", "pnl": 0.0, "days_held": 0}
+            return {
+                "ticker": ticker,
+                "signal_date": signal_date,
+                "status": "NO_DATA",
+                "pnl": 0.0,
+                "days_held": 0,
+                "weight": weight,
+            }
         idx = dates_list.index(signal_date)
         entry_price = float(df.iloc[idx]["close"])
 
-    result = simulate_holding(df, signal_date, entry_price, stop_loss, take_profit, holding_period, settlement_delay)
+    result = simulate_holding(
+        df,
+        signal_date,
+        entry_price,
+        stop_loss,
+        take_profit,
+        holding_period,
+        settlement_delay,
+        round_trip_cost,
+    )
     result["ticker"] = ticker
     result["signal_date"] = signal_date
     result["entry_price"] = round(entry_price, 2)
+    result["weight"] = weight
     return result
 
 
 def track_signals(
     signals: list[dict[str, Any]],
     holding_period: int = 20,
+    round_trip_cost: float | None = None,
     data_dir: str | None = None,
 ) -> list[dict[str, Any]]:
     """Track multiple signals and return their current P&L status."""
+    if round_trip_cost is None:
+        round_trip_cost = Config.round_trip_cost
+    by_date: dict[str, list[dict[str, Any]]] = {}
+    for sig in signals:
+        by_date.setdefault(str(sig.get("signal_date", ""))[:10], []).append(sig)
+
     results = []
     for sig in signals:
         ticker = sig.get("ticker", "")
         signal_date = str(sig.get("signal_date", ""))[:10]
         sl = float(sig.get("stop_loss", -0.03))
         tp = float(sig.get("take_profit", 0.08))
-        result = track_signal(ticker, signal_date, stop_loss=sl, take_profit=tp, holding_period=holding_period, data_dir=data_dir)
+        cohort = by_date[signal_date]
+        supplied_weight = sig.get("weight")
+        if supplied_weight is not None:
+            raw_weight = float(supplied_weight)
+        else:
+            raw_weight = max(float(sig.get("score", 0.0)), 0.0)
+        if not raw_weight:
+            raw_weight = 1.0
+        cohort_total = sum(
+            max(float(item.get("weight", item.get("score", 0.0))), 0.0) or 1.0
+            for item in cohort
+        )
+        weight = raw_weight / cohort_total
+        result = track_signal(
+            ticker,
+            signal_date,
+            stop_loss=sl,
+            take_profit=tp,
+            holding_period=holding_period,
+            round_trip_cost=round_trip_cost,
+            weight=weight,
+            data_dir=data_dir,
+        )
         results.append(result)
     return results
 
@@ -245,31 +304,42 @@ def track_signals(
 def get_signal_summary(results: list[dict[str, Any]]) -> dict[str, Any]:
     """Aggregate tracking results into a portfolio-level summary.
 
-    Equal-weight allocation: each signal gets equal share of capital,
-    so daily portfolio return = average return across all signals that day.
-    Cumulative portfolio P&L = product of (1 + daily_return) across dates.
+    The reported basket P&L is a mark-to-market average across signal-date
+    cohorts. It deliberately does not compound overlapping cohorts into a
+    fictional sequential portfolio.
     """
     total = len(results)
     settling = sum(1 for r in results if r["status"] == "SETTLING")
+    pending = sum(1 for r in results if r["status"] == "PENDING")
+    no_data = sum(1 for r in results if r["status"] == "NO_DATA")
     hit_tp = sum(1 for r in results if r["status"] == "HIT_TP")
     hit_sl = sum(1 for r in results if r["status"] == "HIT_SL")
     active = sum(1 for r in results if r["status"] == "ACTIVE")
     expired = sum(1 for r in results if r["status"] == "EXPIRED")
 
-    # Group by signal_date → equal-weight portfolio return
-    by_date: dict[str, list[float]] = {}
+    # Each signal date is one equally-weighted cohort; weights within a cohort
+    # come from the signal score (or the persisted signal weight).
+    by_date: dict[str, list[dict[str, Any]]] = {}
     for r in results:
         d = str(r.get("signal_date", ""))[:10]
-        by_date.setdefault(d, []).append(r["pnl"])
+        by_date.setdefault(d, []).append(r)
 
     dates_sorted = sorted(by_date.keys())
-    daily_returns = [np.mean(by_date[d]) for d in dates_sorted]
-    portfolio_pnl = np.prod([1 + dr for dr in daily_returns]) - 1 if daily_returns else 0.0
+    daily_returns = []
+    for d in dates_sorted:
+        cohort = by_date[d]
+        weight_total = sum(float(r.get("weight") or 1.0) for r in cohort)
+        daily_returns.append(
+            sum(float(r["pnl"]) * float(r.get("weight") or 1.0) for r in cohort) / weight_total
+        )
+    portfolio_pnl = float(np.mean(daily_returns)) if daily_returns else 0.0
     avg_pnl = np.mean([r["pnl"] for r in results]) if results else 0.0
 
     return {
         "total": total,
         "settling": settling,
+        "pending": pending,
+        "no_data": no_data,
         "hit_tp": hit_tp,
         "hit_sl": hit_sl,
         "active": active,

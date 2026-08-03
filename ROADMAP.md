@@ -1,5 +1,12 @@
 # Roadmap
 
+## Engineering hardening — completed 2026-08-03
+- [x] Point-in-time-safe ML feature set and missing future labels
+- [x] Cloud performance contract and historical remote actuals backfill
+- [x] Idempotent local actuals and timezone-aware market dates
+- [x] Out-of-sample walk-forward ensemble and OHLC-based SL/TP backtest
+- [x] Retry/quality gates, workflow concurrency, timeout, and smoke checks
+
 ## Phase 1 — Core (done)
 - [x] Pipeline fetch 126 mã VN, 23 features, ensemble 4 horizons
 - [x] 5 strategies + auto-select best

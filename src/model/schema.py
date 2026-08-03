@@ -1,4 +1,11 @@
-"""Single source of truth for feature columns and model constants."""
+"""Single source of truth for model features and constants.
+
+The production model intentionally uses only point-in-time-safe technical
+features plus the historical VND/USD series. Current Yahoo ``info`` snapshots
+and synthetic macro values are still available to the standalone strategies,
+but are not allowed into the supervised model because they would leak future
+information into historical training rows.
+"""
 
 from __future__ import annotations
 
@@ -7,10 +14,10 @@ FEATURE_COLS = [
     "rs_5d", "rs_20d", "rs_60d",
     "atr", "atr_pct",
     "volume_surge", "volume_surge_flag",
-    "vndusd", "sbv_rate", "cpi_mom",
-    "pe_ratio", "pb_ratio", "roe", "rev_growth", "earn_growth",
-    "profit_margin", "debt_equity", "div_yield", "log_mcap", "forward_pe",
+    "vndusd",
 ]
+
+MODEL_VERSION = "xgboost_technical_v2"
 
 TARGET_COL = "outperform_5d"
 

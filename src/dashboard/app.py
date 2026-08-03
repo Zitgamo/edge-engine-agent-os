@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import sys
 from pathlib import Path
 
@@ -13,10 +12,9 @@ log = logging.getLogger(__name__)
 
 import pandas as pd
 import streamlit as st
-import time
-from datetime import date, datetime
 
 from src.dashboard.style import CUSTOM_CSS
+from src.time_utils import today_vn
 
 st.set_page_config(
     page_title="Edge Engine — Signals",
@@ -28,14 +26,12 @@ st.set_page_config(
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
 
+@st.cache_data(ttl=300, max_entries=2)
 def load_overview():
-    use_cloud = os.getenv("SUPABASE_URL") and os.getenv("SUPABASE_ANON_KEY")
     try:
-        if use_cloud:
-            from src.supabase_client import get_client
-            client = get_client()
-            if not client:
-                return None, None, 0
+        from src.supabase_client import get_client
+        client = get_client()
+        if client:
             sigs_raw = client.get_signals(limit=100)
             perf_raw = client.get_performance_summary()
             runs_raw = client.get_pipeline_summary()
@@ -71,12 +67,12 @@ with cols[1]:
     st.markdown(
         f'<div style="text-align:right;padding-top:1rem">'
         f'<span class="live-dot"></span>'
-        f'<span style="color:#666;font-size:0.8rem">{date.today().isoformat()}</span></div>',
+        f'<span style="color:#666;font-size:0.8rem">{today_vn().isoformat()}</span></div>',
         unsafe_allow_html=True,
     )
 
 # === TODAY'S SIGNALS ===
-today_sigs = sigs[sigs["signal_date"] == str(date.today())] if not sigs.empty else pd.DataFrame()
+today_sigs = sigs[sigs["signal_date"] == str(today_vn())] if not sigs.empty else pd.DataFrame()
 if not today_sigs.empty:
     st.markdown('<div class="section-title">TOP 3 HÔM NAY</div>', unsafe_allow_html=True)
 
@@ -113,7 +109,7 @@ else:
 
 
 # === KPI ROW ===
-    st.markdown('<div class="section-title">TỔNG QUAN HIỆU SUẤT</div>', unsafe_allow_html=True)
+st.markdown('<div class="section-title">TỔNG QUAN HIỆU SUẤT</div>', unsafe_allow_html=True)
 
 if perf is not None and not perf.empty:
     total_signals = int(perf["total_picks"].sum()) if "total_picks" in perf else len(perf)
@@ -147,22 +143,14 @@ else:
 st.markdown('<div class="section-title">THEO DÕI P&L THỰC TẾ</div>', unsafe_allow_html=True)
 
 try:
-    from src.tracking.realtime import track_signal, get_signal_summary
+    from src.tracking.realtime import get_signal_summary, track_signals
 
     past_signals = sigs.copy() if not sigs.empty else pd.DataFrame()
     if not past_signals.empty:
-        past_signals = past_signals[past_signals["signal_date"] != str(date.today())]
-        tracking_results = []
-        for i, (_, r) in enumerate(past_signals.head(15).iterrows()):
-            if i > 0:
-                time.sleep(0.25)
-            result = track_signal(
-                r["ticker"],
-                str(r["signal_date"])[:10],
-                stop_loss=float(r.get("stop_loss", -0.03)),
-                take_profit=float(r.get("take_profit", 0.08)),
-            )
-            tracking_results.append(result)
+        past_signals = past_signals[past_signals["signal_date"] != str(today_vn())]
+        tracked_signals = past_signals.head(100).to_dict("records")
+        tracking_results = track_signals(tracked_signals)
+        st.caption(f"Tracking latest {len(tracked_signals)} signals")
 
         if tracking_results:
             summary = get_signal_summary(tracking_results)
@@ -173,7 +161,7 @@ try:
                 ("🟡", str(summary["settling"]), "T+2 / Settling", "kpi-blue"),
                 ("🔵", str(summary["active"]), "Active", "kpi-blue"),
                 ("📊", f"{summary['win_rate']:.0f}%", "Win Rate", "kpi-green" if summary['win_rate'] >= 50 else "kpi-red"),
-                ("💰", f"{summary['total_pnl']:+.2%}", "Mark-to-Market P&L", "kpi-green" if summary['total_pnl'] > 0 else "kpi-red"),
+                ("💰", f"{summary['total_pnl']:+.2%}", "Weighted basket P&L", "kpi-green" if summary['total_pnl'] > 0 else "kpi-red"),
             ]
             for icon, val, label, cls in kpi_data:
                 kpi_html += f"""

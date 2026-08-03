@@ -4,6 +4,8 @@ import logging
 
 import pandas as pd
 
+from src.time_utils import today_vn
+
 log = logging.getLogger(__name__)
 
 REQUIRED_COLUMNS = {"ticker", "date", "open", "high", "low", "close", "volume"}
@@ -26,6 +28,15 @@ class DataValidator:
                 errors.append("date column is not datetime")
             if df["date"].isna().any():
                 errors.append("date column contains NaT")
+            if df["date"].duplicated().any():
+                errors.append(f"date column contains {int(df['date'].duplicated().sum())} duplicates")
+            if pd.api.types.is_datetime64_any_dtype(df["date"]):
+                dates = df["date"]
+                if dates.dt.tz is not None:
+                    dates = dates.dt.tz_convert("Asia/Ho_Chi_Minh").dt.tz_localize(None)
+                future = dates > pd.Timestamp(today_vn())
+                if future.any():
+                    errors.append(f"date column contains {int(future.sum())} future rows")
 
         for col in ["open", "high", "low", "close", "volume"]:
             if col in df.columns and df[col].isna().any():
@@ -41,10 +52,18 @@ class DataValidator:
             if (df["high"] < df["low"]).any():
                 n = int((df["high"] < df["low"]).sum())
                 errors.append(f"{n} rows where high < low")
+        if {"high", "open"}.issubset(df.columns):
+            if (df["high"] < df["open"]).any():
+                n = int((df["high"] < df["open"]).sum())
+                errors.append(f"{n} rows where high < open")
         if {"high", "close"}.issubset(df.columns):
             if (df["high"] < df["close"]).any():
                 n = int((df["high"] < df["close"]).sum())
                 errors.append(f"{n} rows where high < close")
+        if {"low", "open"}.issubset(df.columns):
+            if (df["low"] > df["open"]).any():
+                n = int((df["low"] > df["open"]).sum())
+                errors.append(f"{n} rows where low > open")
         if {"low", "close"}.issubset(df.columns):
             if (df["low"] > df["close"]).any():
                 n = int((df["low"] > df["close"]).sum())
