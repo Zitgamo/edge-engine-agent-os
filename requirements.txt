@@ -8,6 +8,7 @@ python-dotenv>=1.0
 requests>=2.31
 yfinance>=1.5
 pyarrow>=15.0
+vnstock>=4.0,<5.0
 pytest>=7.0
 pytest-cov>=4.0
 ruff>=0.1

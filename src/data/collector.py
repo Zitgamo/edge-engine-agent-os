@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import logging
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pandas as pd
 import yfinance as yf
 
 from src.config import Config
 from src.data.universe import VN30_TICKERS
+from src.time_utils import now_vn
 
 log = logging.getLogger(__name__)
 
@@ -72,13 +73,40 @@ class OHLCVCollector:
         df["volume"] = df["volume"].fillna(0).astype(int)
         return df[["ticker", "date", "open", "high", "low", "close", "volume"]].sort_values("date")
 
+    def _fetch_vnstock_index(self, days: int = 365) -> pd.DataFrame:
+        """Fetch VNINDEX from VCI when Yahoo has no historical index series."""
+        from vnstock.api.quote import Quote
+
+        end = now_vn().date() + timedelta(days=1)
+        start = now_vn().date() - timedelta(days=days)
+        hist = Quote(symbol="VNINDEX", source="VCI", show_log=False).history(
+            start=start.isoformat(),
+            end=end.isoformat(),
+        )
+        if hist.empty:
+            return pd.DataFrame()
+        df = hist.reset_index().rename(columns={
+            "time": "date",
+            "open": "open",
+            "high": "high",
+            "low": "low",
+            "close": "close",
+            "volume": "volume",
+        })
+        if "date" not in df.columns:
+            return pd.DataFrame()
+        df = self._normalize_date(df)
+        df["ticker"] = "VNINDEX"
+        df["volume"] = pd.to_numeric(df["volume"], errors="coerce").fillna(0).astype(int)
+        return df[["ticker", "date", "open", "high", "low", "close", "volume"]]
+
     def _build_vnindex(self, days: int = 365) -> pd.DataFrame:
         # Try fetching the real VN-Index (^VNINDEX) from yfinance first
         try:
             log.info("Fetching real VNINDEX (^VNINDEX) from Yahoo Finance")
             t = yf.Ticker("^VNINDEX")
             hist = self._history_with_retry(t, days)
-            if not hist.empty:
+            if len(hist) >= 30:
                 df = hist.reset_index().rename(columns={
                     "Date": "date", "Open": "open", "High": "high",
                     "Low": "low", "Close": "close", "Volume": "volume",
@@ -90,7 +118,17 @@ class OHLCVCollector:
                 self.last_benchmark_source = "yahoo"
                 return df[["ticker", "date", "open", "high", "low", "close", "volume"]].sort_values("date")
         except Exception as e:
-            log.warning("Real VNINDEX fetch failed: %s — falling back to composite", e)
+            log.warning("Real VNINDEX fetch failed: %s — trying VCI", e)
+
+        try:
+            log.info("Fetching VNINDEX from VCI via vnstock")
+            df = self._fetch_vnstock_index(days)
+            if len(df) >= 30:
+                self.last_benchmark_source = "vnstock_vci"
+                log.info("VCI VNINDEX fetched: %d rows", len(df))
+                return df
+        except Exception as e:
+            log.warning("VCI VNINDEX fetch failed: %s", e)
 
         # Fallback: synthesize composite from VN30 (equal-weight, price-normalized)
         log.warning("Using SYNTHETIC VNINDEX composite (not the real market-cap-weighted index)")

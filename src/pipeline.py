@@ -66,7 +66,8 @@ def run_pipeline(config: Config | None = None) -> None:
     benchmark_errors = validator.validate(bm)
     if benchmark_errors or bm.empty:
         raise RuntimeError(f"Benchmark data failed validation: {benchmark_errors}")
-    if config.data_source == "yfinance" and collector.last_benchmark_source != "yahoo":
+    valid_benchmark_sources = {"yahoo", "vnstock_vci"}
+    if config.data_source == "yfinance" and collector.last_benchmark_source not in valid_benchmark_sources:
         raise RuntimeError(
             "Refusing to publish signals without the real VNINDEX benchmark "
             f"(source={collector.last_benchmark_source})"
