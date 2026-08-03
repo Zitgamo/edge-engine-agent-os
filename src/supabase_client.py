@@ -77,6 +77,24 @@ class SupabaseClient:
             return inserted
         raise RuntimeError(f"Supabase upsert {table} failed: {resp.status_code} {resp.text[:200]}")
 
+    def _delete_stale_signal_rows(self, signal_date: str, tickers: list[str]) -> None:
+        """Remove cloud rows for a date that the latest local ranking replaced."""
+        ticker_filter = f"not.in.({','.join(tickers)})"
+        for table in ("signals", "actuals"):
+            try:
+                resp = requests.delete(
+                    f"{self.base}/{table}",
+                    headers=self._headers(use_service=True),
+                    params={"signal_date": f"eq.{signal_date}", "ticker": ticker_filter},
+                    timeout=15,
+                )
+            except requests.RequestException as exc:
+                raise RuntimeError(f"Supabase cleanup {table} request failed") from exc
+            if resp.status_code not in (200, 204):
+                raise RuntimeError(
+                    f"Supabase cleanup {table} failed: {resp.status_code} {resp.text[:200]}"
+                )
+
     def _exec_sql(self, sql: str) -> bool:
         """Execute raw SQL via Supabase SQL endpoint (needs service_role key)."""
         if not self.cfg.service_key:
@@ -162,6 +180,11 @@ class SupabaseClient:
         conn.close()
         if not rows:
             return 0
+        rows_by_date: dict[str, list[str]] = {}
+        for row in rows:
+            rows_by_date.setdefault(str(row[0]), []).append(str(row[1]))
+        for signal_date, tickers in rows_by_date.items():
+            self._delete_stale_signal_rows(signal_date, tickers)
         data = [
             {
                 "signal_date": str(r[0]),
