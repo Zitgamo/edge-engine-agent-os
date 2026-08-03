@@ -40,7 +40,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add data/raw/*_raw.parquet
+          git add -u data/raw
           if git diff --cached --quiet; then
             echo "No raw market data changes"
           else
