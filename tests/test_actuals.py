@@ -26,12 +26,18 @@ def test_calculate_actuals_uses_persisted_raw_prices(tmp_path) -> None:
 
     config = Config()
     config.raw_data_dir = tmp_path
-    signals = pd.DataFrame([{"signal_date": "2026-01-01", "ticker": "AAA"}])
+    signals = pd.DataFrame([{
+        "signal_date": "2026-01-01",
+        "ticker": "AAA",
+        "stop_loss": 0.0,
+        "take_profit": 0.0,
+    }])
 
     result = actuals.calculate_actuals(signals, holding_period=20, config=config)
 
     assert len(result) == 1
     assert result.loc[0, "realized_date"] == "2026-01-29"
+    assert result.loc[0, "entry_date"] == "2026-01-02"
     assert result.loc[0, "actual_outperform"] == 1
 
 

@@ -44,7 +44,7 @@ st.markdown(
 df = load_data()
 
 if df.empty:
-    st.info("No signals yet. Pipeline runs daily at 9 AM VN time.")
+    st.info("No signals yet. Pipeline runs daily at 8 AM VN time.")
     st.stop()
 
 df["signal_date"] = pd.to_datetime(df["signal_date"])

@@ -210,17 +210,10 @@ class HistoricalFundamentalFeatures:
 
         result = df.merge(funda_all, on=["date", "ticker"], how="left")
 
-        # Fill missing with current snapshot fallback
-        ff = FundamentalFeatures()
-        for t in tickers:
-            mask = (result["ticker"] == t)
-            current = ff.compute_ticker_features(t)
-            for col in ["pe_ratio", "pb_ratio", "roe", "debt_equity"]:
-                col_mask = mask & result[col].isna()
-                if col_mask.any():
-                    result.loc[col_mask, col] = current.get(col, 0.0)
-                if result[col].isna().all():
-                    result[col] = current.get(col, 0.0)
+        # Do not fill missing historical rows with Ticker.info.  That API is
+        # a current snapshot and would leak today's fundamentals into an
+        # earlier backtest.  Keep unavailable periods missing so callers can
+        # exclude them explicitly.
 
         for col in ["pe_ratio", "pb_ratio"]:
             if col in result.columns:

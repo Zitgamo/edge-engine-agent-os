@@ -22,6 +22,34 @@ INVESTMENT_DEFAULTS = {
 }
 
 
+def _scheduled_investment_dates(prices: pd.DataFrame, frequency: str) -> set[date]:
+    """Map calendar investment targets to the next available trading session."""
+    if prices.empty or "date" not in prices.columns:
+        return set()
+
+    dates = pd.to_datetime(prices["date"], errors="coerce").dropna().dt.normalize()
+    dates = dates.drop_duplicates().sort_values().reset_index(drop=True)
+    if dates.empty:
+        return set()
+
+    months = {"monthly": 1, "quarterly": 3, "yearly": 12}.get(frequency, 1)
+    first_date = dates.iloc[0]
+    last_date = dates.iloc[-1]
+    target = first_date
+    selected: list[pd.Timestamp] = []
+
+    while target <= last_date:
+        available = dates[dates >= target]
+        if available.empty:
+            break
+        candidate = available.iloc[0]
+        if not selected or candidate != selected[-1]:
+            selected.append(candidate)
+        target = target + pd.DateOffset(months=months)
+
+    return {d.date() for d in selected}
+
+
 def _fetch_prices(ticker: str, start: str, end: str | None = None) -> pd.DataFrame:
     # Try cached collector first to avoid yfinance rate limits
     try:
@@ -66,13 +94,7 @@ def simulate_dca(
         return pd.DataFrame()
 
     prices = prices.copy().sort_values("date")
-    offset_map = {"monthly": 30, "quarterly": 91, "yearly": 365}
-    days_offset = offset_map.get(frequency, 30)
-
-    first_date = prices["date"].min()
-    last_date = prices["date"].max()
-    invest_dates = pd.date_range(start=first_date, end=last_date, freq=f"{days_offset}D")
-    invest_dates = [d.date() for d in invest_dates]
+    invest_dates = _scheduled_investment_dates(prices, frequency)
 
     rows = []
     total_shares = 0.0
@@ -120,11 +142,23 @@ def _load_fundamentals(ticker: str) -> pd.DataFrame:
     tk = df[df[ticker_col] == ticker].copy()
     if tk.empty:
         return pd.DataFrame()
-    tk = tk.sort_values("date")[["date", "pe_ratio", "pb_ratio", "roe", "profit_margin", "log_mcap"]].copy()
+    columns = [
+        col for col in ["date", "pe_ratio", "pb_ratio", "roe", "profit_margin", "log_mcap"]
+        if col in tk.columns
+    ]
+    if not {"date", "pe_ratio", "pb_ratio"}.issubset(columns):
+        return pd.DataFrame()
+    tk = tk.sort_values("date")[columns].copy()
+    available_dates = tk.loc[tk[["pe_ratio", "pb_ratio"]].notna().any(axis=1), "date"].nunique()
+    if available_dates < 2:
+        log.warning("Skipping value DCA for %s: no historical fundamental coverage", ticker)
+        return pd.DataFrame()
     for col in ["pe_ratio", "pb_ratio"]:
         if col in tk.columns:
-            pct = tk[col].rank(pct=True)
-            tk[f"{col}_pct"] = pct
+            # Percentiles are calculated at the decision date in
+            # simulate_value_dca.  A full-history rank here would let future
+            # valuation observations influence an earlier purchase.
+            tk[f"{col}_pct"] = np.nan
     return tk
 
 
@@ -153,23 +187,21 @@ def simulate_value_dca(
     monthly_amount: float = 10_000_000,
     frequency: str = "monthly",
 ) -> pd.DataFrame:
-    if prices.empty:
+    if prices.empty or fundamentals.empty:
+        return pd.DataFrame()
+    # A single current snapshot is not enough to reconstruct point-in-time
+    # valuation decisions.  Callers that bypass _load_fundamentals still get
+    # the same protection against look-ahead bias.
+    if "date" not in fundamentals.columns or not {"pe_ratio", "pb_ratio"}.issubset(fundamentals.columns):
+        return pd.DataFrame()
+    fundamental_dates = pd.to_datetime(fundamentals["date"], errors="coerce").dropna().dt.normalize()
+    if fundamental_dates.nunique() < 2:
         return pd.DataFrame()
     prices = prices.copy().sort_values("date")
-    offset_map = {"monthly": 30, "quarterly": 91, "yearly": 365}
-    days_offset = offset_map.get(frequency, 30)
-    first_date = prices["date"].min()
-    last_date = prices["date"].max()
-    invest_dates = pd.date_range(start=first_date, end=last_date, freq=f"{days_offset}D")
-    invest_dates_set = {d.date() for d in invest_dates}
-
-    fund_map = {}
-    if not fundamentals.empty:
-        for _, r in fundamentals.iterrows():
-            d = r["date"]
-            if isinstance(d, pd.Timestamp):
-                d = d.date()
-            fund_map[d] = r
+    invest_dates_set = _scheduled_investment_dates(prices, frequency)
+    fundamentals = fundamentals.copy()
+    fundamentals["_date"] = pd.to_datetime(fundamentals["date"], errors="coerce").dt.normalize()
+    fundamentals = fundamentals.dropna(subset=["_date"]).sort_values("_date")
 
     rows = []
     total_shares = 0.0
@@ -186,10 +218,27 @@ def simulate_value_dca(
 
         if d in invest_dates_set:
             multiplier = 1.0
-            if d in fund_map:
-                f = fund_map[d]
-                pe_pct = f.get("pe_ratio_pct", np.nan) if "pe_ratio_pct" in f.index or "pe_ratio_pct" in fundamentals.columns else np.nan
-                pb_pct = f.get("pb_ratio_pct", np.nan) if "pb_ratio_pct" in f.index or "pb_ratio_pct" in fundamentals.columns else np.nan
+            prior_fundamentals = fundamentals[fundamentals["_date"] <= pd.Timestamp(d)]
+            if not prior_fundamentals.empty:
+                f = prior_fundamentals.iloc[-1]
+                pe_history = pd.to_numeric(
+                    prior_fundamentals["pe_ratio"], errors="coerce"
+                ).dropna()
+                pb_history = pd.to_numeric(
+                    prior_fundamentals["pb_ratio"], errors="coerce"
+                ).dropna()
+                pe_value = pd.to_numeric(pd.Series([f.get("pe_ratio")]), errors="coerce").iloc[0]
+                pb_value = pd.to_numeric(pd.Series([f.get("pb_ratio")]), errors="coerce").iloc[0]
+                pe_pct = (
+                    float((pe_history <= pe_value).mean())
+                    if pd.notna(pe_value) and not pe_history.empty
+                    else np.nan
+                )
+                pb_pct = (
+                    float((pb_history <= pb_value).mean())
+                    if pd.notna(pb_value) and not pb_history.empty
+                    else np.nan
+                )
                 if pd.notna(pe_pct):
                     if pe_pct < 0.2:
                         multiplier = 1.5
@@ -235,12 +284,7 @@ def simulate_cycle_dca(
     if prices.empty:
         return pd.DataFrame()
     df = _compute_sma_rsi(prices)
-    offset_map = {"monthly": 30, "quarterly": 91, "yearly": 365}
-    days_offset = offset_map.get(frequency, 30)
-    first_date = df["date"].min()
-    last_date = df["date"].max()
-    invest_dates = pd.date_range(start=first_date, end=last_date, freq=f"{days_offset}D")
-    invest_dates_set = {d.date() for d in invest_dates}
+    invest_dates_set = _scheduled_investment_dates(df, frequency)
 
     rows = []
     total_shares = 0.0

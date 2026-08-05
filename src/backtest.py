@@ -36,6 +36,7 @@ def _sltp_excess_return(
     take_profit: float,
     holding_period: int,
     prices_cache: dict[str, pd.DataFrame],
+    round_trip_cost: float = 0.0,
 ) -> float | None:
     """Apply SL/TP to raw OHLC bars, then subtract benchmark return."""
     stock = _load_backtest_prices(ticker, prices_cache)
@@ -46,15 +47,19 @@ def _sltp_excess_return(
     if signal_date not in dates:
         return None
     idx = dates.index(signal_date)
-    future = stock.iloc[idx + 1: idx + 1 + holding_period]
-    if future.empty:
+    entry_idx = idx + 1
+    future = stock.iloc[entry_idx: entry_idx + holding_period]
+    if future.empty or len(future) < holding_period:
         return None
 
-    entry = float(stock.iloc[idx]["close"])
+    entry_row = stock.iloc[entry_idx]
+    entry = float(entry_row.get("open", entry_row["close"]))
+    if not np.isfinite(entry) or entry <= 0:
+        entry = float(entry_row["close"])
     exit_price = float(future.iloc[-1]["close"])
     exit_date = str(future.iloc[-1]["date"])[:10]
     for held, row in enumerate(future.itertuples(index=False), start=1):
-        if held < 2:
+        if held <= 2:
             continue
         low = float(row.low)
         high = float(row.high)
@@ -70,10 +75,13 @@ def _sltp_excess_return(
         exit_date = str(row.date)[:10]
 
     bm = benchmark.set_index(benchmark["date"].dt.strftime("%Y-%m-%d"))["close"]
-    if signal_date not in bm.index or exit_date not in bm.index or float(bm.loc[signal_date]) == 0:
+    benchmark_entry = bm.loc[dates[entry_idx]] if dates[entry_idx] in bm.index else np.nan
+    if pd.isna(benchmark_entry) and signal_date in bm.index:
+        benchmark_entry = bm.loc[signal_date]
+    if exit_date not in bm.index or pd.isna(benchmark_entry) or float(benchmark_entry) == 0:
         return None
-    stock_return = (exit_price - entry) / entry
-    benchmark_return = (float(bm.loc[exit_date]) - float(bm.loc[signal_date])) / float(bm.loc[signal_date])
+    stock_return = (exit_price - entry) / entry - round_trip_cost
+    benchmark_return = (float(bm.loc[exit_date]) - float(benchmark_entry)) / float(benchmark_entry)
     return stock_return - benchmark_return
 
 
@@ -81,9 +89,12 @@ def backtest_sltp(
     sl_levels: list[float] | None = None,
     tp_levels: list[float] | None = None,
     holding_period: int = 20,
+    round_trip_cost: float | None = None,
 ) -> pd.DataFrame:
     sl_levels = sl_levels or [0.0, -0.01, -0.02, -0.03, -0.05]
     tp_levels = tp_levels or [0.0, 0.02, 0.03, 0.05, 0.08, 0.10]
+    if round_trip_cost is None:
+        round_trip_cost = Config().round_trip_cost
 
     df = walk_forward_ensemble_predictions()
     if df.empty:
@@ -111,6 +122,7 @@ def backtest_sltp(
                     tp,
                     holding_period,
                     prices_cache,
+                    round_trip_cost,
                 )
                 for row in picks.itertuples(index=False)
             ]
@@ -273,9 +285,18 @@ def backtest_ensemble(min_train_dates: int = 60) -> pd.DataFrame:
 
 
 def auto_retrain() -> dict[str, float]:
+    """Evaluate and optionally deploy a candidate on a purged time split.
+
+    The production model is trained on the full feature file by the daily
+    pipeline, so scoring that model on a slice of the same file is not an
+    out-of-sample comparison.  Use a chronological train/test split with a
+    label-horizon purge and compare the candidate with a no-skill baseline.
+    """
     init_db()
     df = pd.read_parquet("data/processed/features.parquet")
-    df = df.dropna(subset=FEATURE_COLS + [TARGET_COL]).sort_values("date")
+    df = df.dropna(subset=FEATURE_COLS + [TARGET_COL]).copy()
+    df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.normalize()
+    df = df.dropna(subset=["date"]).sort_values("date")
     dates = sorted(df["date"].unique())
 
     conn = get_conn()
@@ -283,43 +304,49 @@ def auto_retrain() -> dict[str, float]:
     last_date = conn.execute("SELECT MAX(signal_date) FROM signals").fetchone()[0]
     conn.close()
 
+    horizon = int(TARGET_COL.rsplit("_", 1)[-1].removesuffix("d"))
     split = int(len(dates) * 0.8)
-    train_dates = set(dates[:split])
-    test_dates = dates[split:]
+    train_end = split - horizon
+    if train_end <= 0 or split >= len(dates):
+        raise ValueError("Not enough dated rows for purged auto-retrain evaluation")
 
+    train_dates = set(dates[:train_end])
+    test_dates = dates[split:]
     train = df[df["date"].isin(train_dates)]
     test = df[df["date"].isin(test_dates)]
-    if train.empty or test.empty:
-        raise ValueError("Not enough dated rows for auto-retrain evaluation")
-
-    old_model = xgb.XGBClassifier()
-    try:
-        old_model.load_model(str(Config().model_path))
-        y_old = old_model.predict(test[FEATURE_COLS].fillna(0))
-        old_acc = (y_old == test[TARGET_COL]).mean()
-    except Exception:
-        old_acc = 0.0
+    if train.empty or test.empty or train[TARGET_COL].nunique() < 2:
+        raise ValueError("Not enough dated rows or target classes for auto-retrain evaluation")
 
     model_new = xgb.XGBClassifier(**XGBOOST_PARAMS)
     model_new.fit(train[FEATURE_COLS], train[TARGET_COL], verbose=False)
-
     y_pred = model_new.predict(test[FEATURE_COLS].fillna(0))
-    new_acc = (y_pred == test[TARGET_COL]).mean()
-    improvement = new_acc - old_acc
+    new_acc = float((y_pred == test[TARGET_COL]).mean())
 
-    print(f"Old model accuracy: {old_acc:.2%}")
+    # This baseline is also evaluated only on the untouched test dates.  The
+    # saved production model is deliberately not scored here because its
+    # training coverage is unknown and usually includes these dates.
+    positive_rate = float(test[TARGET_COL].mean())
+    baseline_acc = max(positive_rate, 1.0 - positive_rate)
+    improvement = new_acc - baseline_acc
+
+    print(f"Time-split baseline accuracy: {baseline_acc:.2%}")
     print(f"New model accuracy: {new_acc:.2%}")
-    print(f"Improvement: {improvement:+.2%}")
+    print(f"Improvement vs baseline: {improvement:+.2%}")
     print(f"Last pipeline run: {last_run}")
     print(f"Last signal date: {last_date}")
 
     if improvement > 0.01:
         model_new.save_model(str(Config().model_path))
-        log.info("New model saved (improved by %.2f%%)", improvement * 100)
+        log.info("New model saved (improved over baseline by %.2f%%)", improvement * 100)
     else:
         log.info("Skipping deploy (improvement %.2f%% < 1%% threshold)", improvement * 100)
 
-    return {"old_accuracy": old_acc, "new_accuracy": new_acc, "improvement": improvement}
+    return {
+        "old_accuracy": baseline_acc,
+        "baseline_accuracy": baseline_acc,
+        "new_accuracy": new_acc,
+        "improvement": improvement,
+    }
 
 
 def backtest_score_validation(min_train_dates: int = 60) -> None:

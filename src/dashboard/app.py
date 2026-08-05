@@ -113,7 +113,7 @@ if not latest_sigs.empty:
     cards_html += "</div>"
     st.markdown(cards_html, unsafe_allow_html=True)
 else:
-    st.info("Chưa có signal. Pipeline chạy mỗi ngày giao dịch lúc 9:00 VN.")
+    st.info("Chưa có signal. Pipeline chạy mỗi ngày giao dịch lúc 8:00 VN.")
 
 
 # === KPI ROW ===

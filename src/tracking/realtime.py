@@ -116,7 +116,11 @@ def simulate_holding(
     - high_during_hold: max price during holding
     - low_during_hold: min price during holding
     """
-    # SL checked before TP (conservative on wide-range days), exit at limit price not close
+    if holding_period <= 0:
+        raise ValueError("holding_period must be positive")
+
+    # The signal is generated from the signal-day close. Trading starts on
+    # the next session, using that session's open as the default entry.
     dates = df["date"].dt.strftime("%Y-%m-%d").tolist() if hasattr(df["date"], "dt") else list(df["date"].astype(str))
 
     if signal_date not in dates:
@@ -126,7 +130,8 @@ def simulate_holding(
     if idx + 1 >= len(dates):
         return {"status": "PENDING", "pnl": 0.0, "days_held": 0}
 
-    df_after = df.iloc[idx + 1:].reset_index(drop=True)
+    entry_idx = idx + 1
+    df_after = df.iloc[entry_idx: entry_idx + holding_period].reset_index(drop=True)
     sl_price = entry_price * (1 + stop_loss)
     tp_price = entry_price * (1 + take_profit)
 
@@ -150,7 +155,7 @@ def simulate_holding(
         min_low = min(min_low, low)
 
         # VN T+2: shares arrive after settlement_delay, can only sell from then
-        if days_held < settlement_delay:
+        if days_held <= settlement_delay:
             exit_price = close
             exit_date = current_date
             continue
@@ -158,14 +163,17 @@ def simulate_holding(
         status = "ACTIVE"
 
         # Check SL first (conservative: assume worst case on wide-range days)
-        if low <= sl_price:
+        # A non-negative stop loss disables the stop-loss leg.  This keeps
+        # zero-valued test/config overrides from becoming an immediate exit.
+        if stop_loss < 0 and low <= sl_price:
             exit_price = sl_price
             exit_date = current_date
             status = "HIT_SL"
             break
 
         # Check TP (only if SL not hit)
-        if high >= tp_price:
+        # A non-positive take profit disables the take-profit leg.
+        if take_profit > 0 and high >= tp_price:
             exit_price = tp_price
             exit_date = current_date
             status = "HIT_TP"
@@ -211,7 +219,7 @@ def track_signal(
     """Track a single signal's realtime P&L.
 
     VN T+2: settlement_delay=2 → only execute SL/TP from 3rd trading day.
-    If entry_price is None, it's inferred from the close on signal_date.
+    If entry_price is None, it's inferred from the next trading session's open.
     """
     df = load_stock_data(ticker, data_dir)
     if df is None:
@@ -236,7 +244,19 @@ def track_signal(
                 "weight": weight,
             }
         idx = dates_list.index(signal_date)
-        entry_price = float(df.iloc[idx]["close"])
+        if idx + 1 >= len(df):
+            return {
+                "ticker": ticker,
+                "signal_date": signal_date,
+                "status": "PENDING",
+                "pnl": 0.0,
+                "days_held": 0,
+                "weight": weight,
+            }
+        entry_row = df.iloc[idx + 1]
+        entry_price = float(entry_row.get("open", entry_row["close"]))
+        if not np.isfinite(entry_price) or entry_price <= 0:
+            entry_price = float(entry_row["close"])
 
     result = simulate_holding(
         df,

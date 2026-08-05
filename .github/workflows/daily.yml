@@ -2,7 +2,11 @@ name: Daily Pipeline
 
 on:
   schedule:
-    - cron: "0 2 * * 1-5"
+    # GitHub cron is UTC. Try at 08:17, 09:17 and 10:17 Vietnam time so a
+    # delayed first run or late Yahoo close is picked up automatically.
+    # The offset minute avoids the highest-load :00 boundary; the pipeline's
+    # market-date guard makes later attempts idempotent.
+    - cron: "17 1,2,3 * * 1-5"
   workflow_dispatch:
 
 concurrency:

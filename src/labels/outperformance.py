@@ -15,12 +15,29 @@ class OutperformanceLabel:
         benchmark_df: pd.DataFrame,
         horizon: int = 5,
     ) -> pd.DataFrame:
-        df = stock_df.sort_values("date")[["date", "ticker", "close"]].copy()
-        bm = benchmark_df.sort_values("date")[["date", "close"]].copy().rename(columns={"close": "bm_close"})
+        if horizon <= 0:
+            raise ValueError("horizon must be positive")
 
-        merged = df.merge(bm, on="date", how="left")
+        df = stock_df.sort_values("date")[["date", "ticker", "close"]].copy()
+        df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.normalize()
+        df = df.dropna(subset=["date"]).drop_duplicates(subset=["date"], keep="last")
+        bm = benchmark_df.sort_values("date")[["date", "close"]].copy()
+        bm["date"] = pd.to_datetime(bm["date"], errors="coerce").dt.normalize()
+        bm = (
+            bm.dropna(subset=["date"])
+            .drop_duplicates(subset=["date"], keep="last")
+            .rename(columns={"close": "bm_close"})
+        )
+
+        # T+N is N stock trading sessions. Look up the benchmark at the
+        # actual future stock date instead of shifting merged rows: the two
+        # calendars can have different starts and missing sessions.
+        merged = df.copy()
+        merged["future_date"] = merged["date"].shift(-horizon)
         merged["stock_future"] = merged["close"].shift(-horizon)
-        merged["bm_future"] = merged["bm_close"].shift(-horizon)
+        merged = merged.merge(bm, on="date", how="left")
+        future_bm = bm.rename(columns={"date": "future_date", "bm_close": "bm_future"})
+        merged = merged.merge(future_bm, on="future_date", how="left")
 
         merged["stock_ret"] = (merged["stock_future"] - merged["close"]) / merged["close"]
         merged["bm_ret"] = (merged["bm_future"] - merged["bm_close"]) / merged["bm_close"]
@@ -35,7 +52,9 @@ class OutperformanceLabel:
         merged[f"excess_return_{horizon}d"] = merged["stock_ret"] - merged["bm_ret"]
         merged.loc[~valid, excess_col] = np.nan
 
-        result = stock_df.merge(
+        result = stock_df.copy()
+        result["date"] = pd.to_datetime(result["date"], errors="coerce").dt.normalize()
+        result = result.merge(
             merged[["date", "ticker", label_col, excess_col]],
             on=["date", "ticker"],
             how="left",

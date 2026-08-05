@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import pandas as pd
+import pytest
 
+from src.config import Config
 from src.data.collector import OHLCVCollector
 from src.data.universe import get_ticker_universe, filter_quality
 from src.data.validator import DataValidator
@@ -35,6 +37,12 @@ class TestCollector:
         df = collector.fetch("ACB", days=30)
         dates = df["date"]
         assert all(d.weekday() < 5 for d in dates)
+
+    def test_unknown_data_source_is_rejected(self) -> None:
+        config = Config()
+        config.data_source = "typo"
+        with pytest.raises(ValueError, match="Unsupported DATA_SOURCE"):
+            OHLCVCollector(config).fetch("VNM", days=3)
 
 
 class TestValidator:

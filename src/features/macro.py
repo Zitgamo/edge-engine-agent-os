@@ -52,7 +52,14 @@ class MacroFeatures:
         merged = sbv.copy()
         if not vnusd.empty:
             merged = merged.merge(vnusd, on="date", how="left")
-            merged["vndusd"] = merged["vndusd"].ffill()
+        else:
+            # Keep the feature schema stable when Yahoo temporarily omits
+            # the FX series.  add_macro_features applies the explicit
+            # neutral fallback below instead of letting model training fail
+            # with a missing-column KeyError.
+            merged["vndusd"] = pd.NA
+
+        merged["vndusd"] = merged["vndusd"].ffill()
 
         merged["cpi_mom"] = 0.0
         for _, row in cpi.iterrows():
@@ -63,7 +70,8 @@ class MacroFeatures:
 
         for col in ["vndusd", "sbv_rate", "cpi_mom"]:
             if col in merged.columns:
-                merged[col] = merged[col].ffill().bfill()
+                # Never backfill a missing early observation from the future.
+                merged[col] = merged[col].ffill()
 
         log.info("Macro features assembled: %d rows", len(merged))
         return merged
@@ -72,13 +80,27 @@ class MacroFeatures:
 def add_macro_features(df: pd.DataFrame) -> pd.DataFrame:
     macro = MacroFeatures().fetch_all()
     if macro.empty:
-        return df
+        result = df.copy()
+        for col in ["vndusd", "sbv_rate", "cpi_mom"]:
+            result[col] = 0.0
+        return result
     df["date_str"] = pd.to_datetime(df["date"]).dt.strftime("%Y-%m-%d")
     macro["date_str"] = pd.to_datetime(macro["date"]).dt.strftime("%Y-%m-%d")
     result = df.merge(macro.drop(columns=["date"]), on="date_str", how="left")
     result = result.drop(columns=["date_str"])
+
+    # Always expose the complete macro schema.  Fill only from earlier
+    # observations within the same ticker; a global bfill would copy future
+    # macro values into historical rows and across ticker boundaries.
     for col in ["vndusd", "sbv_rate", "cpi_mom"]:
-        if col in result.columns:
-            result[col] = result[col].ffill().bfill().fillna(0)
+        if col not in result.columns:
+            result[col] = 0.0
+        if "ticker" in result.columns:
+            ordered = result.sort_values(["ticker", "date"])
+            result[col] = ordered.groupby("ticker", sort=False)[col].ffill().reindex(result.index)
+        else:
+            result = result.sort_values("date")
+            result[col] = result[col].ffill()
+        result[col] = result[col].fillna(0.0)
     log.info("Added macro features: vndusd, sbv_rate, cpi_mom")
     return result

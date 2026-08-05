@@ -9,20 +9,34 @@ log = logging.getLogger(__name__)
 
 class RelativeStrength:
     def compute(self, df: pd.DataFrame, benchmark: pd.DataFrame) -> pd.DataFrame:
-        df = df.sort_values("date").copy()
-        bm = benchmark.sort_values("date").copy()
+        # Returns must be aligned by trading date.  The stock and benchmark
+        # series often have different start dates, holidays, or missing
+        # sessions; assigning benchmark returns by row position silently
+        # shifts the benchmark history in those cases.
+        df = (
+            df.sort_values("date")
+            .drop_duplicates(subset=["date"], keep="last")
+            .reset_index(drop=True)
+            .copy()
+        )
+        bm = (
+            benchmark[["date", "close"]]
+            .sort_values("date")
+            .drop_duplicates(subset=["date"], keep="last")
+            .reset_index(drop=True)
+            .copy()
+        )
 
-        bm_returns = bm["close"].pct_change()
         stock_returns = df["close"].pct_change()
+        bm["bm_ret"] = bm["close"].pct_change()
 
-        merged = pd.merge(
-            df[["date"]],
-            bm[["date", "close"]].rename(columns={"close": "bm_close"}),
+        merged = df[["date"]].merge(
+            bm[["date", "bm_ret"]],
             on="date",
             how="left",
+            sort=False,
         )
-        merged["stock_ret"] = stock_returns
-        merged["bm_ret"] = bm_returns
+        merged["stock_ret"] = stock_returns.to_numpy()
 
         merged["rs_5d"] = merged["stock_ret"].rolling(5).sum() - merged["bm_ret"].rolling(5).sum()
         merged["rs_20d"] = merged["stock_ret"].rolling(20).sum() - merged["bm_ret"].rolling(20).sum()

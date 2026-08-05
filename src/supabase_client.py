@@ -95,80 +95,31 @@ class SupabaseClient:
                     f"Supabase cleanup {table} failed: {resp.status_code} {resp.text[:200]}"
                 )
 
-    def _exec_sql(self, sql: str) -> bool:
-        """Execute raw SQL via Supabase SQL endpoint (needs service_role key)."""
-        if not self.cfg.service_key:
-            log.warning("Cannot execute SQL: no service_key configured")
-            return False
-        try:
-            resp = requests.post(
-                f"{self.cfg.url.rstrip('/')}/rest/v1/rpc/pg_api",
-                headers=self._headers(use_service=True),
-                json={"query": sql},
-                timeout=15,
-            )
-            if resp.status_code == 200:
-                log.info("SQL executed successfully")
-                return True
-            log.warning("SQL execution failed: %s %s", resp.status_code, resp.text[:200])
-            return False
-        except requests.RequestException:
-            log.warning("SQL execution not supported on this plan, skipping auto-init")
-            return False
-
     def init_tables(self) -> bool:
-        sql = """
-        CREATE TABLE IF NOT EXISTS signals (
-            id BIGSERIAL PRIMARY KEY,
-            signal_date DATE NOT NULL,
-            ticker TEXT NOT NULL,
-            rank INTEGER NOT NULL,
-            score REAL NOT NULL,
-            ensemble_score REAL,
-            stop_loss REAL,
-            take_profit REAL,
-            model_version TEXT,
-            created_at TIMESTAMPTZ DEFAULT NOW(),
-            UNIQUE(signal_date, ticker)
-        );
-        CREATE TABLE IF NOT EXISTS actuals (
-            id BIGSERIAL PRIMARY KEY,
-            signal_date DATE NOT NULL,
-            ticker TEXT NOT NULL,
-            actual_excess_return_5d REAL,
-            actual_outperform INTEGER,
-            realized_date DATE NOT NULL,
-            updated_at TIMESTAMPTZ DEFAULT NOW(),
-            UNIQUE(signal_date, ticker)
-        );
-        CREATE TABLE IF NOT EXISTS pipeline_runs (
-            id BIGSERIAL PRIMARY KEY,
-            run_date TIMESTAMPTZ DEFAULT NOW(),
-            accuracy REAL,
-            precision REAL,
-            recall REAL,
-            f1 REAL,
-            roc_auc REAL,
-            status TEXT
-        );
-        CREATE TABLE IF NOT EXISTS strategy_performance (
-            id BIGSERIAL PRIMARY KEY,
-            strategy_name TEXT NOT NULL,
-            signal_date DATE NOT NULL,
-            ticker TEXT NOT NULL,
-            rank INTEGER,
-            score REAL,
-            actual_excess_return_5d REAL,
-            actual_outperform INTEGER,
-            realized INTEGER DEFAULT 0,
-            created_at TIMESTAMPTZ DEFAULT NOW(),
-            UNIQUE(strategy_name, signal_date, ticker)
-        );
-        CREATE INDEX IF NOT EXISTS idx_signals_date ON signals(signal_date);
-        CREATE INDEX IF NOT EXISTS idx_actuals_signal ON actuals(signal_date, ticker);
-        CREATE INDEX IF NOT EXISTS idx_strategy_date ON strategy_performance(signal_date);
+        """Verify that the manually-installed Supabase schema is available.
+
+        Supabase's REST API cannot execute arbitrary DDL with a service key.
+        The schema must be installed once from ``supabase_setup.sql``.
         """
-        return self._exec_sql(sql)
+        for table in ("signals", "actuals", "pipeline_runs", "strategy_performance"):
+            try:
+                resp = requests.get(
+                    f"{self.base}/{table}",
+                    headers=self._headers(use_service=True),
+                    params={"select": "*", "limit": "1"},
+                    timeout=15,
+                )
+            except requests.RequestException as exc:
+                raise RuntimeError("Supabase schema check request failed") from exc
+            if resp.status_code != 200:
+                log.warning(
+                    "Supabase schema check failed for %s: %s %s",
+                    table,
+                    resp.status_code,
+                    resp.text[:200],
+                )
+                return False
+        return True
 
     def sync_signals(self) -> int:
         from src.database import get_conn
@@ -232,7 +183,7 @@ class SupabaseClient:
         their T+20 outcomes.
         """
         signals = self._query("signals", {
-            "select": "signal_date,ticker",
+            "select": "signal_date,ticker,stop_loss,take_profit",
             "order": "signal_date.asc",
             "limit": "5000",
         })
@@ -321,6 +272,10 @@ class SupabaseClient:
         return self._upsert("strategy_performance", data, on_conflict="strategy_name,signal_date,ticker")
 
     def sync_all(self) -> dict[str, int]:
+        if not self.init_tables():
+            raise RuntimeError(
+                "Supabase schema is unavailable; run supabase_setup.sql in the Supabase SQL Editor"
+            )
         counts = {}
         counts["signals"] = self.sync_signals()
         counts["remote_actuals"] = self.backfill_remote_actuals()
@@ -433,5 +388,8 @@ def sync_all() -> dict[str, int] | None:
     client = get_client()
     if client is None:
         log.info("Supabase not configured — skipping cloud sync")
+        return None
+    if not client.cfg.service_key:
+        log.warning("SUPABASE_SERVICE_KEY is not configured — skipping cloud sync")
         return None
     return client.sync_all()

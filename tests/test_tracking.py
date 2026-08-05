@@ -56,3 +56,42 @@ def test_summary_averages_overlapping_cohorts_instead_of_compounding() -> None:
 
     assert result["portfolio_pnl"] == 0.25
     assert result["total_pnl"] == 0.25
+
+
+def test_tracker_uses_next_open_and_respects_settlement_delay() -> None:
+    dates = pd.bdate_range("2026-01-01", periods=5)
+    df = _ohlcv("AAA", list(dates))
+    df["open"] = [90.0, 100.0, 100.0, 100.0, 100.0]
+    df["close"] = [90.0, 100.0, 100.0, 100.0, 100.0]
+    df.loc[2, "low"] = 90.0  # T+2: must still be ignored
+    df.loc[3, "low"] = 90.0  # T+3: SL is executable
+
+    result = realtime.simulate_holding(
+        df,
+        signal_date="2026-01-01",
+        entry_price=100.0,
+        stop_loss=-0.05,
+        take_profit=0.08,
+        holding_period=4,
+        settlement_delay=2,
+    )
+
+    assert result["status"] == "HIT_SL"
+    assert result["exit_date"] == "2026-01-06"
+
+
+def test_track_signal_infers_next_session_open(monkeypatch) -> None:
+    dates = pd.bdate_range("2026-01-01", periods=3)
+    df = _ohlcv("AAA", list(dates))
+    df["open"] = [90.0, 101.0, 102.0]
+    monkeypatch.setattr(realtime, "load_stock_data", lambda ticker, data_dir=None: df)
+
+    result = realtime.track_signal(
+        "AAA",
+        "2026-01-01",
+        stop_loss=0.0,
+        take_profit=0.0,
+        holding_period=1,
+    )
+
+    assert result["entry_price"] == 101.0

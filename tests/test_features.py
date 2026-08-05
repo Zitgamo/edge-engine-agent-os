@@ -4,8 +4,10 @@ import pandas as pd
 import pytest
 
 from src.features.returns import ReturnFeatures
+from src.features.rs import RelativeStrength
 from src.features.volatility import ATR
 from src.features.volume import VolumeSurge
+from src.features.macro import MacroFeatures, add_macro_features
 
 
 @pytest.fixture
@@ -53,3 +55,48 @@ class TestVolumeSurge:
     def test_flag_is_integer(self, sample_df: pd.DataFrame) -> None:
         result = VolumeSurge().compute(sample_df).dropna()
         assert result["volume_surge_flag"].dtype == "int" or result["volume_surge_flag"].dtype == "int64"
+
+
+def test_relative_strength_aligns_benchmark_by_date() -> None:
+    benchmark_dates = pd.bdate_range("2026-01-01", periods=15)
+    stock_dates = benchmark_dates[5:]
+    benchmark = pd.DataFrame({
+        "date": benchmark_dates,
+        "close": [100, 200, 202, 204, 206, 208, 210, 212, 214, 216, 218, 220, 222, 224, 226],
+    })
+    stock = pd.DataFrame({
+        "date": stock_dates,
+        "close": [100, 101, 102, 103, 104, 105, 106, 107, 108, 109],
+    })
+
+    result = RelativeStrength().compute(stock, benchmark).set_index("date")
+    stock_returns = stock.set_index("date")["close"].pct_change().rolling(5).sum()
+    benchmark_returns = benchmark.set_index("date")["close"].pct_change().reindex(stock_dates).rolling(5).sum()
+    expected = stock_returns - benchmark_returns
+
+    pd.testing.assert_series_equal(
+        result["rs_5d"], expected,
+        check_names=False,
+    )
+
+
+def test_macro_features_keep_schema_when_fx_is_unavailable(monkeypatch) -> None:
+    monkeypatch.setattr(
+        MacroFeatures,
+        "fetch_all",
+        lambda self: pd.DataFrame({
+            "date": pd.to_datetime(["2026-01-02"]),
+            "sbv_rate": [4.5],
+            "cpi_mom": [0.3],
+        }),
+    )
+    df = pd.DataFrame({
+        "ticker": ["AAA"],
+        "date": pd.to_datetime(["2026-01-02"]),
+        "close": [100.0],
+    })
+
+    result = add_macro_features(df)
+
+    assert "vndusd" in result.columns
+    assert result.loc[0, "vndusd"] == 0.0

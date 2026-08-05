@@ -27,9 +27,9 @@ class Config:
     take_profit: float = float(os.getenv("TAKE_PROFIT", "0.08"))
     round_trip_cost: float = float(os.getenv("ROUND_TRIP_COST", "0.0"))
 
-    @classmethod
-    def ensure_dirs(cls) -> None:
-        cls.raw_data_dir.mkdir(parents=True, exist_ok=True)
-        cls.processed_data_dir.mkdir(parents=True, exist_ok=True)
-        Path("models").mkdir(parents=True, exist_ok=True)
-        Path("logs").mkdir(parents=True, exist_ok=True)
+    def ensure_dirs(self) -> None:
+        """Create directories using this config instance's paths."""
+        Path(self.raw_data_dir).mkdir(parents=True, exist_ok=True)
+        Path(self.processed_data_dir).mkdir(parents=True, exist_ok=True)
+        Path(self.model_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(self.log_file).parent.mkdir(parents=True, exist_ok=True)

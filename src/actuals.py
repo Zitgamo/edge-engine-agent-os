@@ -15,6 +15,8 @@ import pandas as pd
 
 from src.config import Config
 from src.data.collector import OHLCVCollector
+from src.time_utils import today_vn
+from src.tracking.realtime import simulate_holding
 
 log = logging.getLogger(__name__)
 
@@ -41,8 +43,10 @@ def _load_prices(
     config: Config,
     collector: OHLCVCollector,
     cache: dict[str, pd.DataFrame],
+    required_date: str | None = None,
+    days: int = 365,
 ) -> pd.DataFrame:
-    """Load a ticker from persisted raw data and fetch only when necessary."""
+    """Load a ticker, refreshing when persisted data does not cover a signal."""
     if ticker in cache:
         return cache[ticker]
 
@@ -50,27 +54,41 @@ def _load_prices(
     if path.exists():
         try:
             result = _normalise_prices(pd.read_parquet(path))
-            if not result.empty:
+            dates = set(result["date"].dt.strftime("%Y-%m-%d")) if not result.empty else set()
+            if not result.empty and (required_date is None or required_date in dates):
                 cache[ticker] = result
                 return result
+            if required_date is not None:
+                log.info("Persisted prices for %s do not cover %s; refreshing", ticker, required_date)
         except Exception as exc:
             log.warning("Cannot read persisted prices for %s: %s", ticker, exc)
 
-    result = _normalise_prices(collector.fetch(ticker, days=365))
+    result = _normalise_prices(collector.fetch(ticker, days=days))
     cache[ticker] = result
     return result
+
+
+def _history_days(required_date: str | None, holding_period: int) -> int:
+    if not required_date:
+        return 365
+    try:
+        age_days = max(0, (today_vn() - pd.Timestamp(required_date).date()).days)
+    except (TypeError, ValueError):
+        return 365
+    return max(365, int(age_days * 1.3) + holding_period + 60)
 
 
 def calculate_actuals(
     signals: pd.DataFrame | list[dict[str, Any]],
     holding_period: int = 20,
     config: Config | None = None,
+    settlement_delay: int = 2,
 ) -> pd.DataFrame:
-    """Calculate T+``holding_period`` excess returns for pending signals.
+    """Calculate executable T+``holding_period`` excess returns for pending signals.
 
-    A signal is realized only when both the stock and benchmark have a close
-    on the stock's future trading date.  Missing future observations stay
-    pending rather than being converted into a zero or a loss.
+    Signals are generated from a closing price, so entry is the next trading
+    session's open.  SL/TP and settlement rules match the realtime tracker.
+    Missing future observations stay pending rather than becoming a loss.
     """
     pending = signals.copy() if isinstance(signals, pd.DataFrame) else pd.DataFrame(signals)
     required = {"signal_date", "ticker"}
@@ -80,48 +98,94 @@ def calculate_actuals(
     config = config or Config()
     collector = OHLCVCollector(config)
     prices_cache: dict[str, pd.DataFrame] = {}
+    signal_dates = pd.to_datetime(pending["signal_date"], errors="coerce").dropna()
+    history_days = _history_days(
+        signal_dates.min().date().isoformat() if not signal_dates.empty else None,
+        holding_period,
+    )
     try:
-        benchmark = _load_prices("VNINDEX", config, collector, prices_cache)
+        benchmark = _load_prices(
+            "VNINDEX",
+            config,
+            collector,
+            prices_cache,
+            required_date=signal_dates.min().date().isoformat() if not signal_dates.empty else None,
+            days=history_days,
+        )
     except Exception as exc:
         log.warning("Cannot load benchmark for actuals: %s", exc)
         return pd.DataFrame()
     if benchmark.empty:
         return pd.DataFrame()
 
-    benchmark_map = dict(
-        zip(benchmark["date"].dt.strftime("%Y-%m-%d"), pd.to_numeric(benchmark["close"], errors="coerce"))
+    benchmark_dates = benchmark["date"].dt.strftime("%Y-%m-%d")
+    benchmark_close = dict(zip(benchmark_dates, pd.to_numeric(benchmark["close"], errors="coerce")))
+    benchmark_open = (
+        dict(zip(benchmark_dates, pd.to_numeric(benchmark["open"], errors="coerce")))
+        if "open" in benchmark.columns
+        else {}
     )
 
     actuals: list[dict[str, Any]] = []
-    for row in pending.itertuples(index=False):
-        signal_date = str(getattr(row, "signal_date"))[:10]
-        ticker = str(getattr(row, "ticker"))
+    for row in pending.to_dict(orient="records"):
+        signal_date = str(row.get("signal_date", ""))[:10]
+        ticker = str(row.get("ticker", ""))
         try:
-            prices = _load_prices(ticker, config, collector, prices_cache)
+            prices = _load_prices(
+                ticker,
+                config,
+                collector,
+                prices_cache,
+                required_date=signal_date,
+                days=history_days,
+            )
             dates = prices["date"].dt.strftime("%Y-%m-%d").tolist()
             if signal_date not in dates:
                 continue
             idx = dates.index(signal_date)
-            future_idx = idx + holding_period
-            if future_idx >= len(dates):
+            entry_idx = idx + 1
+            if entry_idx >= len(dates):
                 continue
 
-            future_date = dates[future_idx]
-            stock_now = float(prices.iloc[idx]["close"])
-            stock_future = float(prices.iloc[future_idx]["close"])
-            bm_now = benchmark_map.get(signal_date)
-            bm_future = benchmark_map.get(future_date)
+            entry_row = prices.iloc[entry_idx]
+            entry_date = dates[entry_idx]
+            entry_price = float(entry_row.get("open", entry_row["close"]))
+            if pd.isna(entry_price) or entry_price <= 0:
+                entry_price = float(entry_row["close"])
+
+            stop_loss = row.get("stop_loss", config.stop_loss)
+            take_profit = row.get("take_profit", config.take_profit)
+            stop_loss = config.stop_loss if stop_loss is None or pd.isna(stop_loss) else float(stop_loss)
+            take_profit = config.take_profit if take_profit is None or pd.isna(take_profit) else float(take_profit)
+
+            simulation = simulate_holding(
+                prices,
+                signal_date,
+                entry_price,
+                stop_loss,
+                take_profit,
+                holding_period=holding_period,
+                settlement_delay=settlement_delay,
+                round_trip_cost=config.round_trip_cost,
+            )
+            if simulation.get("status") not in {"HIT_SL", "HIT_TP", "EXPIRED"}:
+                continue
+
+            exit_date = str(simulation["exit_date"])[:10]
+            stock_return = float(simulation["pnl"])
+            bm_now = benchmark_open.get(entry_date)
+            if bm_now is None or pd.isna(bm_now):
+                bm_now = benchmark_close.get(entry_date)
+            bm_future = benchmark_close.get(exit_date)
             if (
                 bm_now is None
                 or bm_future is None
                 or pd.isna(bm_now)
                 or pd.isna(bm_future)
-                or stock_now == 0
                 or float(bm_now) == 0
             ):
                 continue
 
-            stock_return = (stock_future - stock_now) / stock_now
             benchmark_return = (float(bm_future) - float(bm_now)) / float(bm_now)
             excess = stock_return - benchmark_return
             actuals.append({
@@ -130,7 +194,10 @@ def calculate_actuals(
                 "actual_excess_return_5d": excess,
                 "actual_excess_return": excess,
                 "actual_outperform": int(excess > 0),
-                "realized_date": future_date,
+                "realized_date": exit_date,
+                "entry_date": entry_date,
+                "entry_price": entry_price,
+                "status": simulation["status"],
             })
         except Exception as exc:
             log.warning("Actual calculation failed for %s %s: %s", signal_date, ticker, exc)

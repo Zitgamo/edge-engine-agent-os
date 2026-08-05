@@ -20,14 +20,16 @@ class OHLCVCollector:
         self.last_benchmark_source: str | None = None
 
     def fetch(self, ticker: str, days: int = 365) -> pd.DataFrame:
-        source = self.config.data_source
+        source = str(self.config.data_source).strip().lower()
         if source == "mock":
             if ticker == "VNINDEX":
                 self.last_benchmark_source = "mock"
             return self._mock_data(ticker, days)
         if source == "yfinance":
             return self._fetch_yfinance(ticker, days)
-        return self._mock_data(ticker, days)
+        raise ValueError(
+            f"Unsupported DATA_SOURCE={self.config.data_source!r}; expected 'yfinance' or 'mock'"
+        )
 
     def _normalize_date(self, df: pd.DataFrame) -> pd.DataFrame:
         df["date"] = pd.to_datetime(df["date"])

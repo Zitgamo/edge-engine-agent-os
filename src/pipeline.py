@@ -49,6 +49,53 @@ STOP_LOSS = -0.03
 TAKE_PROFIT = 0.08
 
 
+def _latest_published_signal_date() -> pd.Timestamp | None:
+    """Read the latest published signal date from cloud or local storage."""
+    candidates: list[pd.Timestamp] = []
+
+    try:
+        from src.supabase_client import get_client
+
+        client = get_client()
+        if client is not None:
+            rows = client.get_signals(limit=1)
+            if rows:
+                remote_date = pd.to_datetime(rows[0].get("signal_date"), errors="coerce")
+                if pd.notna(remote_date):
+                    candidates.append(pd.Timestamp(remote_date).normalize())
+    except Exception as exc:
+        # A cloud read outage must not prevent a local/manual pipeline run.
+        log.warning("Cannot read latest cloud signal date: %s", exc)
+
+    try:
+        from src.database import get_conn
+
+        conn = get_conn()
+        local_date = conn.execute("SELECT MAX(signal_date) FROM signals").fetchone()[0]
+        conn.close()
+        local_date = pd.to_datetime(local_date, errors="coerce")
+        if pd.notna(local_date):
+            candidates.append(pd.Timestamp(local_date).normalize())
+    except Exception as exc:
+        log.warning("Cannot read latest local signal date: %s", exc)
+
+    return max(candidates) if candidates else None
+
+
+def _should_run_for_market_date(market_date: pd.Timestamp | str) -> bool:
+    """Return false when this market session already has a published signal."""
+    market_date = pd.Timestamp(market_date).normalize()
+    published_date = _latest_published_signal_date()
+    if published_date is not None and market_date <= published_date:
+        log.info(
+            "No new market session: latest market=%s, published signal=%s; skipping",
+            market_date.date(),
+            published_date.date(),
+        )
+        return False
+    return True
+
+
 def run_pipeline(config: Config | None = None) -> None:
     setup_logging()
     config = config or Config()
@@ -67,12 +114,16 @@ def run_pipeline(config: Config | None = None) -> None:
     if benchmark_errors or bm.empty:
         raise RuntimeError(f"Benchmark data failed validation: {benchmark_errors}")
     valid_benchmark_sources = {"yahoo", "vnstock_vci"}
-    if config.data_source == "yfinance" and collector.last_benchmark_source not in valid_benchmark_sources:
+    if str(config.data_source).strip().lower() == "yfinance" and collector.last_benchmark_source not in valid_benchmark_sources:
         raise RuntimeError(
             "Refusing to publish signals without the real VNINDEX benchmark "
             f"(source={collector.last_benchmark_source})"
         )
     storage.save_raw(bm, "VNINDEX_raw.parquet")
+
+    latest_benchmark_date = pd.Timestamp(bm["date"].max()).normalize()
+    if not _should_run_for_market_date(latest_benchmark_date):
+        return
 
     all_dfs: list[pd.DataFrame] = []
     collected = 0
@@ -230,8 +281,8 @@ def run_pipeline(config: Config | None = None) -> None:
 
     signal = SignalGenerator().pick_top_n(
         ranking, n=N_PICKS,
-        stop_loss=STOP_LOSS,
-        take_profit=TAKE_PROFIT,
+        stop_loss=config.stop_loss,
+        take_profit=config.take_profit,
         signal_date=latest_market_date.isoformat(),
     )
     storage.save_processed(signal, "signal.parquet")

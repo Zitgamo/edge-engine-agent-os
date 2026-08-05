@@ -136,7 +136,8 @@ def save_pipeline_run(metrics: dict[str, float], status: str = "success") -> int
 def get_signals(limit: int = 100) -> pd.DataFrame:
     conn = get_conn()
     df = pd.read_sql_query(
-        """SELECT s.id, s.signal_date, s.ticker, s.rank, s.score, s.model_version, s.created_at,
+        """SELECT s.id, s.signal_date, s.ticker, s.rank, s.score,
+                  s.stop_loss, s.take_profit, s.model_version, s.created_at,
                   a.actual_excess_return_5d, a.actual_outperform, a.realized_date
            FROM signals s
            LEFT JOIN actuals a ON s.signal_date = a.signal_date AND s.ticker = a.ticker
@@ -181,7 +182,11 @@ def update_actuals(df: pd.DataFrame) -> int:
 def backfill_actuals(holding_period: int = 20) -> int:
     conn = get_conn()
     pending = pd.read_sql_query(
-        "SELECT signal_date, ticker FROM signals WHERE (signal_date, ticker) NOT IN (SELECT signal_date, ticker FROM actuals)",
+        """SELECT s.signal_date, s.ticker, s.stop_loss, s.take_profit
+           FROM signals s
+           WHERE (s.signal_date, s.ticker) NOT IN (
+               SELECT signal_date, ticker FROM actuals
+           )""",
         conn,
     )
     conn.close()

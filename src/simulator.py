@@ -14,6 +14,7 @@ from src.features.returns import ReturnFeatures
 from src.features.rs import RelativeStrength
 from src.features.volatility import ATR
 from src.features.volume import VolumeSurge
+from src.labels.outperformance import OutperformanceLabel
 from src.model.inference import ModelInference
 
 log = logging.getLogger(__name__)
@@ -56,15 +57,18 @@ def prepare_data() -> pd.DataFrame:
         feature_dfs.append(d)
     features = pd.concat(feature_dfs, ignore_index=True)
 
-    bm_sorted = bm.sort_values("date")[["date", "close"]].rename(columns={"close": "bm_close"})
     label_parts = []
     for df in all_dfs:
-        s = df.sort_values("date")[["date", "ticker", "close"]].copy()
-        m = s.merge(bm_sorted, on="date", how="left")
+        labelled = df.copy()
         for h in HORIZONS:
-            m[f"excess_return_{h}d"] = ((m["close"].shift(-h) - m["close"]) / m["close"]) - ((m["bm_close"].shift(-h) - m["bm_close"]) / m["bm_close"])
-            m[f"outperform_{h}d"] = (m[f"excess_return_{h}d"] > 0).astype(int)
-        label_parts.append(m[["date", "ticker"] + [f"excess_return_{h}d" for h in HORIZONS] + [f"outperform_{h}d" for h in HORIZONS]])
+            labelled = OutperformanceLabel().compute(labelled, bm, horizon=h)
+        label_parts.append(
+            labelled[
+                ["date", "ticker"]
+                + [f"excess_return_{h}d" for h in HORIZONS]
+                + [f"outperform_{h}d" for h in HORIZONS]
+            ]
+        )
 
     labels = pd.concat(label_parts, ignore_index=True)
     data = features.merge(labels, on=["date", "ticker"], how="left")

@@ -188,31 +188,44 @@ class StrategyManager:
         if pending.empty:
             return 0
 
-        df = pd.read_parquet("data/processed/features.parquet")
-        df["date_str"] = pd.to_datetime(df["date"]).dt.strftime("%Y-%m-%d")
+        # Strategy weights must be based on executable outcomes, not the
+        # feature label computed from signal-day closes.  Calculate each
+        # signal once, then apply the same realized result to every strategy
+        # that selected it.
+        from src.actuals import calculate_actuals
 
-        er_col = f"excess_return_{self.holding_period}d"
+        unique_signals = pending[["signal_date", "ticker"]].drop_duplicates()
+        actuals = calculate_actuals(unique_signals, holding_period=self.holding_period)
+        if actuals.empty:
+            return 0
+        actual_map = {
+            (str(row["signal_date"])[:10], str(row["ticker"])): row
+            for row in actuals.to_dict("records")
+        }
 
-        updated = 0
-        for _, row in pending.iterrows():
-            sd = row["signal_date"]
-            tk = row["ticker"]
-            match = df[(df["date_str"] == sd) & (df["ticker"] == tk)]
-            if match.empty:
+        updates = []
+        for row in pending.to_dict("records"):
+            actual = actual_map.get((str(row["signal_date"])[:10], str(row["ticker"])))
+            if actual is None:
                 continue
-            er = match[er_col].values[0] if er_col in match.columns else None
-            if er is None or pd.isna(er):
-                continue
-            conn = get_conn()
-            conn.execute(
-                """UPDATE strategy_performance
-                   SET actual_excess_return_5d = ?, actual_outperform = ?, realized = 1
-                   WHERE id = ?""",
-                (float(er), int(er > 0), int(row["id"])),
-            )
-            conn.commit()
-            conn.close()
-            updated += 1
+            updates.append((
+                float(actual["actual_excess_return"]),
+                int(actual["actual_outperform"]),
+                int(row["id"]),
+            ))
+
+        if not updates:
+            return 0
+        conn = get_conn()
+        conn.executemany(
+            """UPDATE strategy_performance
+               SET actual_excess_return_5d = ?, actual_outperform = ?, realized = 1
+               WHERE id = ?""",
+            updates,
+        )
+        conn.commit()
+        conn.close()
+        updated = len(updates)
 
         log.info("Backfilled %d strategy actuals (T+%d)", updated, self.holding_period)
         return updated

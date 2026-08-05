@@ -10,7 +10,7 @@
 ## Phase 1 — Core (done)
 - [x] Pipeline fetch 126 mã VN, 23 features, ensemble 4 horizons
 - [x] 5 strategies + auto-select best
-- [x] GitHub Actions daily 9h VN
+- [x] GitHub Actions daily 8h VN (before market open)
 - [x] T+20 holding, N=3 picks, SL -3% / TP +8%
 - [x] CLI: pipeline, signal, summary, history
 - [x] Signal + performance in log (xem trên GitHub Actions)
