@@ -35,8 +35,14 @@ jobs:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
       - name: Show signal
         run: python -m src.cli signal
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
       - name: Show performance
         run: python -m src.cli summary
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
       - name: Syntax smoke check
         run: |
           python -m compileall -q src tests
@@ -63,3 +69,4 @@ jobs:
         with:
           name: ranking
           path: data/processed/ranking.parquet
+          if-no-files-found: ignore

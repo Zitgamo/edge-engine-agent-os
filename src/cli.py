@@ -60,6 +60,17 @@ def main() -> None:
         )
         conn.close()
         if actuals.empty:
+            # GitHub Actions starts with a fresh SQLite file on every run.
+            # Fall back to the cloud copy so a retry can still display history.
+            try:
+                from src.supabase_client import get_client
+
+                client = get_client()
+                if client is not None:
+                    actuals = pd.DataFrame(client.get_actuals(limit=500))
+            except Exception as exc:  # pragma: no cover - network/config dependent
+                log.warning("Could not load performance history from Supabase: %s", exc)
+        if actuals.empty:
             print("No performance data yet. Run 'pipeline' first (backfill is automatic now).")
             return
         total = len(actuals)
@@ -87,6 +98,17 @@ def main() -> None:
     elif cmd == "signal":
         from src.database import get_signals
         df = get_signals(limit=10)
+        if df.empty:
+            # A fresh GitHub runner has no checked-in SQLite database. Read the
+            # published signal from Supabase before reporting that none exists.
+            try:
+                from src.supabase_client import get_client
+
+                client = get_client()
+                if client is not None:
+                    df = pd.DataFrame(client.get_signals(limit=10))
+            except Exception as exc:  # pragma: no cover - network/config dependent
+                log.warning("Could not load signals from Supabase: %s", exc)
         if df.empty:
             print("No signals yet. Run 'pipeline' first.")
         else:
