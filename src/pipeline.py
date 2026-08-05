@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import time
 
 import pandas as pd
 import xgboost as xgb
@@ -36,7 +37,7 @@ from src.model.schema import (
 )
 from src.model.trainer import ModelTrainer  # noqa: F401  (kept for backwards compat)
 from src.ranking.signal import SignalGenerator
-from src.time_utils import today_vn
+from src.time_utils import now_vn, today_vn
 
 log = logging.getLogger(__name__)
 
@@ -47,6 +48,27 @@ N_PICKS = _N_PICKS
 HOLDING_PERIOD = _HOLDING_PERIOD
 STOP_LOSS = -0.03
 TAKE_PROFIT = 0.08
+
+
+def _closed_market_sessions(
+    df: pd.DataFrame,
+    as_of=None,
+) -> pd.DataFrame:
+    """Exclude today's partial bar until the Vietnam session is closed."""
+    if df.empty or "date" not in df.columns:
+        return df.copy()
+
+    result = df.copy()
+    dates = pd.to_datetime(result["date"], errors="coerce")
+    if dates.dt.tz is not None:
+        dates = dates.dt.tz_localize(None)
+    result["date"] = dates.dt.normalize()
+
+    as_of = as_of or now_vn()
+    cutoff = pd.Timestamp(as_of.date())
+    if as_of.time() >= time(15, 30):
+        cutoff += pd.Timedelta(days=1)
+    return result[result["date"] < cutoff].reset_index(drop=True)
 
 
 def _latest_published_signal_date() -> pd.Timestamp | None:
@@ -107,9 +129,10 @@ def run_pipeline(config: Config | None = None) -> None:
     collector = OHLCVCollector(config)
     storage = PriceStorage(config)
     validator = DataValidator()
+    run_time = now_vn()
 
     universe = get_ticker_universe()
-    bm = collector.fetch("VNINDEX", days=365)
+    bm = _closed_market_sessions(collector.fetch("VNINDEX", days=365), run_time)
     benchmark_errors = validator.validate(bm)
     if benchmark_errors or bm.empty:
         raise RuntimeError(f"Benchmark data failed validation: {benchmark_errors}")
@@ -135,6 +158,7 @@ def run_pipeline(config: Config | None = None) -> None:
             log.exception("Failed to collect %s: %s", ticker, exc)
             skipped += 1
             continue
+        df = _closed_market_sessions(df, run_time)
         df = filter_quality(df, ticker)
         if df is None:
             skipped += 1
