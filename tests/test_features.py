@@ -80,6 +80,25 @@ def test_relative_strength_aligns_benchmark_by_date() -> None:
     )
 
 
+def test_relative_strength_ignores_non_overlapping_sessions_in_rolling_window() -> None:
+    dates = pd.bdate_range("2026-01-01", periods=70)
+    benchmark_dates = dates.delete(20)
+    benchmark = pd.DataFrame({
+        "date": benchmark_dates,
+        "close": range(100, 169),
+    })
+    stock = pd.DataFrame({
+        "date": dates,
+        "close": range(200, 270),
+    })
+
+    result = RelativeStrength().compute(stock, benchmark).set_index("date")
+
+    # The missing benchmark session must not poison the 60-session window
+    # after the stock/benchmark calendars re-align.
+    assert pd.notna(result.loc[dates[61], "rs_60d"])
+
+
 def test_macro_features_keep_schema_when_fx_is_unavailable(monkeypatch) -> None:
     monkeypatch.setattr(
         MacroFeatures,

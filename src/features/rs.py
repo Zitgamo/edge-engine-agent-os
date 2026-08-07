@@ -13,7 +13,7 @@ class RelativeStrength:
         # series often have different start dates, holidays, or missing
         # sessions; assigning benchmark returns by row position silently
         # shifts the benchmark history in those cases.
-        df = (
+        stock = (
             df.sort_values("date")
             .drop_duplicates(subset=["date"], keep="last")
             .reset_index(drop=True)
@@ -27,24 +27,31 @@ class RelativeStrength:
             .copy()
         )
 
-        stock_returns = df["close"].pct_change()
-        bm["bm_ret"] = bm["close"].pct_change()
+        # Build returns only on the intersection of stock and benchmark
+        # sessions.  Rolling over the stock calendar with missing benchmark
+        # rows makes one holiday invalidate the next 60 observations, which
+        # can remove almost the entire training window from the pipeline.
+        aligned = stock[["date", "close"]].rename(columns={"close": "stock_close"}).merge(
+            bm[["date", "close"]].rename(columns={"close": "bm_close"}),
+            on="date",
+            how="inner",
+            sort=True,
+        )
+        aligned["stock_ret"] = aligned["stock_close"].pct_change()
+        aligned["bm_ret"] = aligned["bm_close"].pct_change()
 
-        merged = df[["date"]].merge(
-            bm[["date", "bm_ret"]],
+        for window in (5, 20, 60):
+            aligned[f"rs_{window}d"] = (
+                aligned["stock_ret"].rolling(window).sum()
+                - aligned["bm_ret"].rolling(window).sum()
+            )
+
+        result = stock.merge(
+            aligned[["date", "rs_5d", "rs_20d", "rs_60d"]],
             on="date",
             how="left",
             sort=False,
         )
-        merged["stock_ret"] = stock_returns.to_numpy()
-
-        merged["rs_5d"] = merged["stock_ret"].rolling(5).sum() - merged["bm_ret"].rolling(5).sum()
-        merged["rs_20d"] = merged["stock_ret"].rolling(20).sum() - merged["bm_ret"].rolling(20).sum()
-        merged["rs_60d"] = merged["stock_ret"].rolling(60).sum() - merged["bm_ret"].rolling(60).sum()
-
-        df["rs_5d"] = merged["rs_5d"]
-        df["rs_20d"] = merged["rs_20d"]
-        df["rs_60d"] = merged["rs_60d"]
 
         log.info("Computed RS metrics")
-        return df
+        return result
