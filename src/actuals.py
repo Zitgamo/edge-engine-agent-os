@@ -21,6 +21,32 @@ from src.tracking.realtime import simulate_holding
 log = logging.getLogger(__name__)
 
 
+def add_execution_excess_column(
+    df: pd.DataFrame,
+    holding_period: int = 20,
+) -> pd.DataFrame:
+    """Expose one canonical executable excess-return column.
+
+    Older local/cloud rows use ``actual_excess_return_5d`` even though the
+    production holding period is T+20.  Prefer the correctly named field and
+    fall back to legacy fields while data is being migrated.
+    """
+    result = df.copy()
+    candidates = [
+        "execution_excess_return",
+        f"actual_excess_return_{holding_period}d",
+        "actual_excess_return",
+        "actual_excess_return_5d",
+    ]
+    combined = pd.Series(pd.NA, index=result.index, dtype="Float64")
+    for column in candidates:
+        if column in result.columns:
+            values = pd.to_numeric(result[column], errors="coerce").astype("Float64")
+            combined = combined.combine_first(values)
+    result["execution_excess_return"] = combined
+    return result
+
+
 def _normalise_prices(df: pd.DataFrame) -> pd.DataFrame:
     """Return sorted, de-duplicated prices with normalized dates."""
     if df.empty or "date" not in df.columns or "close" not in df.columns:
@@ -188,17 +214,26 @@ def calculate_actuals(
 
             benchmark_return = (float(bm_future) - float(bm_now)) / float(bm_now)
             excess = stock_return - benchmark_return
-            actuals.append({
+            outcome = {
                 "signal_date": signal_date,
                 "ticker": ticker,
+                "actual_stock_return": stock_return,
+                "benchmark_return": benchmark_return,
+                "gross_stock_return": float(simulation.get("gross_pnl", stock_return)),
+                "transaction_cost": float(
+                    simulation.get("transaction_cost", config.round_trip_cost)
+                ),
                 "actual_excess_return_5d": excess,
                 "actual_excess_return": excess,
                 "actual_outperform": int(excess > 0),
                 "realized_date": exit_date,
                 "entry_date": entry_date,
                 "entry_price": entry_price,
+                "exit_price": simulation["exit_price"],
                 "status": simulation["status"],
-            })
+            }
+            outcome[f"actual_excess_return_{holding_period}d"] = excess
+            actuals.append(outcome)
         except Exception as exc:
             log.warning("Actual calculation failed for %s %s: %s", signal_date, ticker, exc)
 

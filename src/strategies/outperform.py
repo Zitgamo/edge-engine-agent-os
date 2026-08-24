@@ -14,7 +14,7 @@ log = logging.getLogger(__name__)
 
 class OutperformStrategy(Strategy):
     name = "outperform"
-    description = "XGBoost ensemble predict T+5 outperform vs VNINDEX"
+    description = "Execution-aligned T+20 XGBoost ranking with quality and entry gates"
     requires_ml = True
 
     def rank(self, df: pd.DataFrame) -> pd.DataFrame:

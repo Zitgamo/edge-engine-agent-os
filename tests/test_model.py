@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -15,6 +16,7 @@ def training_df() -> pd.DataFrame:
     for col in FEATURE_COLS:
         data[col] = [float(i % 100) / 100.0 for i in range(n)]
     data[TARGET_COL] = [i % 2 for i in range(n)]
+    data["label_end_date_5d"] = dates.to_series().shift(-5).to_numpy()
     return pd.DataFrame(data)
 
 
@@ -35,4 +37,36 @@ class TestModelEvaluator:
         assert "precision" in metrics
         assert "recall" in metrics
         assert "f1" in metrics
+        assert "positive_rate" in metrics
+        assert "majority_baseline_accuracy" in metrics
         assert 0.0 <= metrics["accuracy"] <= 1.0
+
+    def test_evaluate_reports_top3_ranking_metrics(self) -> None:
+        dates = pd.date_range("2024-01-01", periods=2, freq="B")
+        rows = []
+        for day in dates:
+            for ticker, score in [("AAA", 0.9), ("BBB", 0.6), ("CCC", 0.1)]:
+                row = {col: 0.0 for col in FEATURE_COLS}
+                row.update({
+                    "date": day,
+                    "outperform_5d": int(score > 0.5),
+                    "excess_return_5d": score - 0.5,
+                    "score": score,
+                })
+                rows.append(row)
+        df = pd.DataFrame(rows)
+
+        class StubModel:
+            def predict(self, frame: pd.DataFrame) -> list[int]:
+                return [1 if value > 0 else 0 for value in frame[FEATURE_COLS[0]]]
+
+            def predict_proba(self, frame: pd.DataFrame) -> list[list[float]]:
+                # The evaluator only needs a deterministic ranking score.
+                values = pd.Series(range(len(frame)), dtype=float) / max(len(frame), 1)
+                return np.asarray([[1.0 - value, value] for value in values])
+
+        metrics = ModelEvaluator().evaluate(StubModel(), df)
+
+        assert metrics["evaluation_dates"] == 2
+        assert "top3_excess_return" in metrics
+        assert "top3_spread" in metrics

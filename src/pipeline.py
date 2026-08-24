@@ -16,8 +16,10 @@ from src.features.fundamental import add_fundamental_features
 from src.features.macro import add_macro_features
 from src.features.returns import ReturnFeatures
 from src.features.rs import RelativeStrength
+from src.features.strategy import add_strategy_features
 from src.features.volatility import ATR
 from src.features.volume import VolumeSurge
+from src.labels.execution import add_execution_labels
 from src.labels.outperformance import OutperformanceLabel
 from src.logging_setup import setup_logging
 from src.model.evaluator import ModelEvaluator
@@ -35,6 +37,9 @@ from src.model.schema import (
 from src.model.schema import (
     N_PICKS as _N_PICKS,
 )
+from src.model.splits import purged_recent_train_window, recent_date_window
+from src.model.targets import target_spec
+from src.model.blend import blend_horizon_scores
 from src.model.trainer import ModelTrainer  # noqa: F401  (kept for backwards compat)
 from src.ranking.signal import SignalGenerator
 from src.time_utils import now_vn, today_vn
@@ -118,13 +123,145 @@ def _should_run_for_market_date(market_date: pd.Timestamp | str) -> bool:
     return True
 
 
-def run_pipeline(config: Config | None = None) -> None:
+def _enforce_execution_horizon_quality(
+    metrics: dict[str, float],
+    *,
+    horizon: int,
+    config: Config,
+) -> None:
+    """Block publication unless the execution-horizon ranking has real edge."""
+    if horizon != HOLDING_PERIOD:
+        return
+
+    quality_dates = metrics.get("execution_evaluation_dates")
+    top3_return = metrics.get("execution_top3_excess_return")
+    top3_spread = metrics.get("execution_top3_spread")
+    if quality_dates is None or top3_return is None or top3_spread is None:
+        raise RuntimeError(
+            f"T+{horizon} model quality gate failed: execution quality metrics "
+            "are unavailable. No new signal was published."
+        )
+
+    if quality_dates < config.min_model_quality_dates:
+        raise RuntimeError(
+            f"T+{horizon} model quality gate failed: only {quality_dates:.0f} "
+            f"execution ranking dates; minimum is {config.min_model_quality_dates}."
+        )
+    if top3_return < config.min_model_top3_excess_return:
+        raise RuntimeError(
+            f"T+{horizon} model quality gate failed: execution top-3 excess return="
+            f"{top3_return:.2%} < minimum {config.min_model_top3_excess_return:.2%}."
+        )
+    if top3_spread < config.min_model_top3_spread:
+        raise RuntimeError(
+            f"T+{horizon} model quality gate failed: execution top-3 spread="
+            f"{top3_spread:.2%} < minimum {config.min_model_top3_spread:.2%}."
+        )
+
+    roc_auc = metrics.get("roc_auc")
+    if roc_auc is not None and roc_auc < config.min_model_roc_auc:
+        log.warning(
+            "T+%d class ROC-AUC=%.3f is below %.3f, but execution ranking gates passed "
+            "(%d dates; top3 return=%.2f%%; spread=%.2f%%)",
+            horizon,
+            roc_auc,
+            config.min_model_roc_auc,
+            quality_dates,
+            top3_return * 100,
+            top3_spread * 100,
+        )
+
+
+def _execution_quality_metrics(
+    model: xgb.XGBClassifier,
+    df: pd.DataFrame,
+    *,
+    config: Config,
+    holding_period: int,
+    top_n: int = N_PICKS,
+) -> dict[str, float]:
+    """Measure model ranking edge using executable next-open trade outcomes.
+
+    The publication gate uses the same next-open, settlement-delay, SL/TP and
+    benchmark logic used by actuals/backtest, regardless of which supervised
+    target is selected. This prevents a model with a good proxy label but no
+    executable edge from being published.
+    """
+    from src.backtest import _sltp_excess_return
+
+    required = [*FEATURE_COLS, "date", "ticker"]
+    quality = df.dropna(subset=required).copy()
+    if quality.empty:
+        return {}
+    quality["date"] = pd.to_datetime(quality["date"], errors="coerce").dt.normalize()
+    quality = quality.dropna(subset=["date"])
+    if quality.empty:
+        return {}
+    quality["quality_score"] = model.predict_proba(
+        quality[FEATURE_COLS].fillna(0)
+    )[:, 1]
+
+    prices_cache: dict[str, pd.DataFrame] = {}
+    daily: list[dict[str, float]] = []
+    for signal_date, day in quality.groupby("date"):
+        executable: list[dict[str, float]] = []
+        date_key = pd.Timestamp(signal_date).date().isoformat()
+        for row in day.itertuples(index=False):
+            excess_return = _sltp_excess_return(
+                str(row.ticker),
+                date_key,
+                config.stop_loss,
+                config.take_profit,
+                holding_period,
+                prices_cache,
+                config.round_trip_cost,
+                data_dir=config.raw_data_dir,
+            )
+            if excess_return is not None and pd.notna(excess_return):
+                executable.append({
+                    "score": float(row.quality_score),
+                    "excess_return": float(excess_return),
+                })
+        if len(executable) < top_n:
+            continue
+        returns = pd.DataFrame(executable)
+        top = returns.nlargest(top_n, "score")
+        top_return = float(top["excess_return"].mean())
+        universe_return = float(returns["excess_return"].mean())
+        daily.append({
+            "top3_win_rate": float((top["excess_return"] > 0).mean()),
+            "top3_excess_return": top_return,
+            "universe_excess_return": universe_return,
+            "top3_spread": top_return - universe_return,
+        })
+
+    if not daily:
+        return {}
+    ranking_metrics = pd.DataFrame(daily)
+    return {
+        "execution_evaluation_dates": float(len(ranking_metrics)),
+        "execution_top3_win_rate": float(ranking_metrics["top3_win_rate"].mean()),
+        "execution_top3_excess_return": float(
+            ranking_metrics["top3_excess_return"].mean()
+        ),
+        "execution_universe_excess_return": float(
+            ranking_metrics["universe_excess_return"].mean()
+        ),
+        "execution_top3_spread": float(ranking_metrics["top3_spread"].mean()),
+    }
+
+
+def run_pipeline(
+    config: Config | None = None,
+    *,
+    force: bool = False,
+) -> None:
     setup_logging()
     config = config or Config()
     config.ensure_dirs()
     init_db()
 
-    log.info("=== Pipeline started ===")
+    log.info("=== Pipeline started%s ===", " (forced rebuild)" if force else "")
 
     collector = OHLCVCollector(config)
     storage = PriceStorage(config)
@@ -145,7 +282,7 @@ def run_pipeline(config: Config | None = None) -> None:
     storage.save_raw(bm, "VNINDEX_raw.parquet")
 
     latest_benchmark_date = pd.Timestamp(bm["date"].max()).normalize()
-    if not _should_run_for_market_date(latest_benchmark_date):
+    if not force and not _should_run_for_market_date(latest_benchmark_date):
         return
 
     all_dfs: list[pd.DataFrame] = []
@@ -195,7 +332,7 @@ def run_pipeline(config: Config | None = None) -> None:
         df = volume_surge.compute(df)
         feature_dfs.append(df)
 
-    features = pd.concat(feature_dfs, ignore_index=True)
+    features = add_strategy_features(pd.concat(feature_dfs, ignore_index=True))
 
     log.info("=== Adding macro features ===")
     features = add_macro_features(features)
@@ -214,50 +351,166 @@ def run_pipeline(config: Config | None = None) -> None:
     merge_cols = ["date", "ticker"]
     for h in ENSEMBLE_HORIZONS:
         if f"outperform_{h}d" in labels.columns:
-            merge_cols += [f"outperform_{h}d", f"excess_return_{h}d"]
+            merge_cols += [
+                f"outperform_{h}d",
+                f"excess_return_{h}d",
+                f"label_end_date_{h}d",
+            ]
     features = features.merge(labels[merge_cols], on=["date", "ticker"], how="left")
+
+    if config.execution_target_enabled:
+        log.info("=== Adding execution-aligned T+%d labels ===", HOLDING_PERIOD)
+        execution_keys = pd.concat(
+            [df[["date", "ticker"]] for df in all_dfs],
+            ignore_index=True,
+        )
+        execution_labels = add_execution_labels(
+            execution_keys,
+            raw_data_dir=config.raw_data_dir,
+            stop_loss=config.stop_loss,
+            take_profit=config.take_profit,
+            holding_period=HOLDING_PERIOD,
+            round_trip_cost=config.round_trip_cost,
+        )
+        execution_spec = target_spec(
+            HOLDING_PERIOD,
+            use_execution_target=True,
+        )
+        features = features.merge(
+            execution_labels[["date", "ticker", execution_spec.target_col,
+                              execution_spec.return_col, execution_spec.label_end_col]],
+            on=["date", "ticker"],
+            how="left",
+        )
 
     storage.save_processed(features, "features.parquet")
 
     log.info("=== Walk-forward train/test split ===")
-    trainable = features.dropna(subset=FEATURE_COLS + [f"outperform_{h}d" for h in ENSEMBLE_HORIZONS])
+    target_specs = {
+        h: target_spec(
+            h,
+            use_execution_target=config.execution_target_enabled,
+        )
+        for h in ENSEMBLE_HORIZONS
+    }
+    label_cols = [spec.target_col for spec in target_specs.values()]
+    label_end_cols = [spec.label_end_col for spec in target_specs.values()]
+    trainable = features.dropna(subset=FEATURE_COLS + label_cols + label_end_cols)
     dates = sorted(trainable["date"].unique())
-    if len(dates) < 30:
+    if len(dates) < max(30, config.model_quality_test_days + 1):
         raise RuntimeError(f"Only {len(dates)} usable dates remain after feature/label construction")
-    cutoff = int(len(dates) * TRAIN_SPLIT)
-    train_dates = set(dates[:cutoff])
-    test_dates = dates[cutoff:]
-    train = trainable[trainable["date"].isin(train_dates)]
-    test = trainable[trainable["date"].isin(test_dates)]
-    if train.empty or test.empty:
-        raise RuntimeError("Walk-forward split produced an empty train or test set")
-    log.info("Train: %d dates, %d rows | Test: %d dates, %d rows", len(train_dates), len(train), len(test_dates), len(test))
+    train_by_horizon: dict[int, pd.DataFrame] = {}
+    test_by_horizon: dict[int, pd.DataFrame] = {}
+    for h in ENSEMBLE_HORIZONS:
+        spec = target_specs[h]
+        target = spec.target_col
+        label_end_col = spec.label_end_col
+        eligible = features.dropna(subset=FEATURE_COLS + [target, label_end_col])
+        horizon_dates = sorted(pd.to_datetime(eligible["date"]).dt.normalize().unique())
+        quality_days = min(config.model_quality_test_days, len(horizon_dates) - 1)
+        if quality_days <= 0:
+            raise RuntimeError(f"No quality-test dates available for T+{h}")
+        test_start = pd.Timestamp(horizon_dates[-quality_days]).normalize()
+        train_h = purged_recent_train_window(
+            eligible,
+            test_start=test_start,
+            label_end_col=label_end_col,
+            max_dates=config.model_training_days,
+        )
+        test_h = eligible[eligible["date"] >= test_start].copy()
+        if train_h.empty or test_h.empty:
+            raise RuntimeError(f"Purged split produced no train/test rows for T+{h}")
+        if train_h[target].nunique() < 2:
+            raise RuntimeError(f"Training target for T+{h} contains only one class")
+        train_by_horizon[h] = train_h
+        test_by_horizon[h] = test_h
+        log.info(
+            "T+%d train: %d rows | test: %d rows | rolling window=%d dates | purged before %s",
+            h,
+            len(train_h),
+            len(test_h),
+            config.model_training_days,
+            test_start.date(),
+        )
 
     log.info("=== Training ensemble models (walk-forward) ===")
     ensemble_models: dict[int, xgb.XGBClassifier] = {}
     for h in ENSEMBLE_HORIZONS:
-        target = f"outperform_{h}d"
-        X_train = train[FEATURE_COLS]
-        y_train = train[target]
+        target = target_specs[h].target_col
+        train_h = train_by_horizon[h]
+        X_train = train_h[FEATURE_COLS]
+        y_train = train_h[target]
         model = xgb.XGBClassifier(**XGBOOST_PARAMS)
         model.fit(X_train, y_train, verbose=False)
         ensemble_models[h] = model
-        model.save_model(f"models/xgboost_model_h{h}.json")
         log.info("Trained T+%d on %d samples", h, len(X_train))
 
     log.info("=== Walk-forward evaluation on test set ===")
     evaluator = ModelEvaluator()
     all_metrics = {}
     for h, model in ensemble_models.items():
-        target = f"outperform_{h}d"
-        metrics = evaluator.evaluate(model, test, target_col=target)
+        spec = target_specs[h]
+        target = spec.target_col
+        metrics = evaluator.evaluate(model, test_by_horizon[h], target_col=target)
+        if h == HOLDING_PERIOD:
+            metrics.update(
+                _execution_quality_metrics(
+                    model,
+                    test_by_horizon[h],
+                    config=config,
+                    holding_period=h,
+                )
+            )
         all_metrics[f"T+{h}"] = metrics
-        log.info("T+%d test metrics: %s", h, metrics)
+        log.info(
+            "T+%d %s label metrics: %s | positive rate=%.2f%% | majority baseline=%.2f%%",
+            h,
+            "execution" if spec.execution else "close-to-close",
+            metrics,
+            metrics["positive_rate"] * 100,
+            metrics["majority_baseline_accuracy"] * 100,
+        )
+        if h == HOLDING_PERIOD:
+            log.info(
+                "T+%d executable ranking metrics: dates=%s top3_return=%s spread=%s",
+                h,
+                metrics.get("execution_evaluation_dates", 0),
+                f"{metrics['execution_top3_excess_return']:.2%}"
+                if "execution_top3_excess_return" in metrics else "N/A",
+                f"{metrics['execution_top3_spread']:.2%}"
+                if "execution_top3_spread" in metrics else "N/A",
+            )
+        try:
+            _enforce_execution_horizon_quality(metrics, horizon=h, config=config)
+        except RuntimeError as exc:
+            # A quality failure is an expected market state, not an unhandled
+            # runner crash. Persist the diagnosis, keep the previous
+            # production model untouched, and publish an explicit no-trade
+            # result so scheduled workflows remain observable and idempotent.
+            latest_market_date = pd.Timestamp(latest_benchmark_date).date()
+            log.error("Model quality gate blocked publication: %s", exc)
+            save_pipeline_run(
+                metrics,
+                status="quality_failed",
+                run_key=latest_market_date.isoformat(),
+            )
+            storage.save_processed(pd.DataFrame(), "ranking.parquet")
+            from src.database import backfill_actuals
+            backfill_actuals(holding_period=HOLDING_PERIOD)
+            from src.supabase_client import sync_all
+            sync_all()
+            log.warning("No trade published because the execution quality gate failed")
+            return
 
     log.info("=== Retrain on full data for production ===")
     for h in ENSEMBLE_HORIZONS:
-        target = f"outperform_{h}d"
-        full = trainable[trainable[target].notna()]
+        spec = target_specs[h]
+        target = spec.target_col
+        label_end_col = spec.label_end_col
+        full = features.dropna(subset=FEATURE_COLS + [target, label_end_col])
+        full = recent_date_window(full, config.model_training_days)
+        if full.empty or full[target].nunique() < 2:
+            raise RuntimeError(f"Full production training data is invalid for T+{h}")
         X_full = full[FEATURE_COLS]
         y_full = full[target]
         model = xgb.XGBClassifier(**XGBOOST_PARAMS)
@@ -271,8 +524,12 @@ def run_pipeline(config: Config | None = None) -> None:
     df_temp = df_all[FEATURE_COLS].fillna(0)
     for h, model in ensemble_models.items():
         df_all[f"score_{h}d"] = model.predict_proba(df_temp)[:, 1]
-    score_cols = [f"score_{h}d" for h in ENSEMBLE_HORIZONS]
-    df_all["ensemble_score"] = df_all[score_cols].mean(axis=1)
+    df_all["ensemble_score"] = blend_horizon_scores(
+        df_all,
+        ENSEMBLE_HORIZONS,
+        weights=config.ensemble_horizon_weights,
+        mode=config.ensemble_blend_mode,
+    )
     df_all["score"] = df_all["ensemble_score"]
 
     log.info("=== Running all strategies ===")
@@ -280,10 +537,31 @@ def run_pipeline(config: Config | None = None) -> None:
     sm = StrategyManager(holding_period=HOLDING_PERIOD)
     rankings = sm.run_all(df_all)
 
-    ranking = rankings.get("_ensemble", rankings.get("outperform", pd.DataFrame()))
+    primary_name = config.primary_ranking_strategy
+    ranking = rankings.get(primary_name)
+    if ranking is None or ranking.empty:
+        ranking = rankings.get("_ensemble", rankings.get("outperform", pd.DataFrame()))
+    log.info("Primary ranking strategy: %s", primary_name)
+    from src.filters.entry import apply_entry_filters
+    ranking, filter_report = apply_entry_filters(ranking, df_all, config)
+    rankings["_ensemble"] = ranking
+    log.info("Entry filter report: %s", filter_report)
     log.info("Using ensemble ranking: %s", list(ranking.head(3)["ticker"]) if not ranking.empty else "empty")
     if ranking.empty:
-        raise RuntimeError("No ensemble ranking was produced")
+        latest_market_date = pd.Timestamp(df_all["date"].max()).date()
+        report_metrics = all_metrics.get(f"T+{HOLDING_PERIOD}") or all_metrics.get("T+5", {})
+        save_pipeline_run(
+            report_metrics,
+            status="no_trade",
+            run_key=latest_market_date.isoformat(),
+        )
+        storage.save_processed(ranking, "ranking.parquet")
+        log.warning("No eligible ranking passed entry gates; publishing no trade")
+        from src.database import backfill_actuals
+        backfill_actuals(holding_period=HOLDING_PERIOD)
+        from src.supabase_client import sync_all
+        sync_all()
+        return
     storage.save_processed(ranking, "ranking.parquet")
 
     latest_market_date = pd.Timestamp(ranking["date"].max()).date()
@@ -329,7 +607,12 @@ def run_pipeline(config: Config | None = None) -> None:
     send_signal(signal, "ensemble")
 
     report_metrics = all_metrics.get(f"T+{HOLDING_PERIOD}") or all_metrics.get("T+5", {})
-    save_pipeline_run(report_metrics)
+    log.info(
+        "Persisting %s T+%d label metrics; executable quality metrics remain included",
+        "execution" if target_specs[HOLDING_PERIOD].execution else "close-to-close",
+        HOLDING_PERIOD,
+    )
+    save_pipeline_run(report_metrics, run_key=latest_market_date.isoformat())
     log.info("=== Backfilling actuals (T+%d) ===", HOLDING_PERIOD)
     from src.database import backfill_actuals
     bf_count = backfill_actuals(holding_period=HOLDING_PERIOD)

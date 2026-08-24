@@ -4,7 +4,8 @@ import logging
 
 import pandas as pd
 
-from src.database import get_conn
+from src.config import Config
+from src.database import _ensure_column, get_conn
 from src.strategies.accumulation import AccumulationStrategy
 from src.strategies.base import Strategy
 from src.strategies.breakout import BreakoutStrategy
@@ -15,27 +16,48 @@ from src.strategies.momentum import MomentumStrategy
 from src.strategies.outperform import OutperformStrategy
 from src.strategies.rs_momentum import RSMomentumStrategy
 from src.strategies.rsi import RSIStrategy
+from src.strategies.trend_following import TrendFollowingStrategy
+from src.strategies.breakout_volatility import BreakoutVolatilityStrategy
 from src.time_utils import today_vn
 
 log = logging.getLogger(__name__)
 
-ENSEMBLE_STRATEGIES: list[Strategy] = [
+CORE_ENSEMBLE_STRATEGIES: list[Strategy] = [
     OutperformStrategy(),
     RSMomentumStrategy(),
     MeanReversionStrategy(),
-    FundamentalValueStrategy(),
     MomentumStrategy(),
     BreakoutStrategy(),
     RSIStrategy(),
     DefensiveStrategy(),
 ]
 
-ALL_STRATEGIES: list[Strategy] = ENSEMBLE_STRATEGIES + [AccumulationStrategy()]
+RESEARCH_ONLY_STRATEGIES: list[Strategy] = [
+    FundamentalValueStrategy(),
+    TrendFollowingStrategy(),
+    BreakoutVolatilityStrategy(),
+    AccumulationStrategy(),
+]
+
+# Backwards-compatible export: this is the default production ensemble.  A
+# caller that explicitly opts into research modules is handled by the
+# StrategyManager constructor below.
+ENSEMBLE_STRATEGIES: list[Strategy] = CORE_ENSEMBLE_STRATEGIES
+ALL_STRATEGIES: list[Strategy] = CORE_ENSEMBLE_STRATEGIES + RESEARCH_ONLY_STRATEGIES
 
 
 class StrategyManager:
-    def __init__(self, holding_period: int = 20) -> None:
-        self.strategies = ENSEMBLE_STRATEGIES
+    def __init__(
+        self,
+        holding_period: int = 20,
+        *,
+        include_research: bool | None = None,
+    ) -> None:
+        if include_research is None:
+            include_research = Config().enable_research_strategies
+        self.strategies = list(CORE_ENSEMBLE_STRATEGIES)
+        if include_research:
+            self.strategies.extend(RESEARCH_ONLY_STRATEGIES)
         self.holding_period = holding_period
         self._init_db()
 
@@ -50,6 +72,7 @@ class StrategyManager:
                 rank INTEGER NOT NULL,
                 score REAL NOT NULL,
                 actual_excess_return_5d REAL,
+                actual_excess_return_20d REAL,
                 actual_outperform INTEGER,
                 realized BOOLEAN DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -57,6 +80,13 @@ class StrategyManager:
             CREATE INDEX IF NOT EXISTS idx_strat_perf_name ON strategy_performance(strategy_name);
             CREATE INDEX IF NOT EXISTS idx_strat_perf_date ON strategy_performance(signal_date);
         """)
+        _ensure_column(conn, "strategy_performance", "actual_excess_return_20d", "REAL")
+        conn.execute(
+            """UPDATE strategy_performance
+               SET actual_excess_return_20d = actual_excess_return_5d
+               WHERE actual_excess_return_20d IS NULL
+                 AND actual_excess_return_5d IS NOT NULL"""
+        )
         conn.commit()
         conn.close()
 
@@ -103,18 +133,91 @@ class StrategyManager:
 
     def get_strategy_weights(self, min_signals: int = 10) -> dict[str, float]:
         """Get performance-based weights for each strategy.
-        
-        No hard switching: all strategies contribute proportionally.
-        Weight = max(0.1, normalized_score) so no strategy is ever zero.
+
+        No hard switching: all strategies contribute proportionally.  The
+        local SQLite history is merged with Supabase history so a fresh
+        GitHub runner does not silently reset adaptive weights to equal
+        weights on every run.
         """
         conn = get_conn()
-        df = pd.read_sql_query(
-            """SELECT strategy_name, actual_outperform, actual_excess_return_5d
+        local_df = pd.read_sql_query(
+            """SELECT strategy_name, signal_date, ticker,
+                      actual_outperform, realized,
+                      COALESCE(actual_excess_return_20d, actual_excess_return_5d)
+                      AS actual_excess_return_20d
                FROM strategy_performance
                WHERE realized = 1 AND actual_outperform IS NOT NULL""",
             conn,
         )
         conn.close()
+
+        frames = [local_df] if not local_df.empty else []
+        try:
+            from src.supabase_client import get_client
+
+            client = get_client()
+            remote_rows = client.get_strategy_performance() if client else []
+            remote_df = pd.DataFrame(remote_rows)
+            if not remote_df.empty:
+                if "actual_excess_return_20d" not in remote_df.columns:
+                    remote_df["actual_excess_return_20d"] = pd.Series(
+                        index=remote_df.index, dtype="float64"
+                    )
+                remote_df["actual_excess_return_20d"] = remote_df[
+                    "actual_excess_return_20d"
+                ].combine_first(
+                    remote_df.get(
+                        "actual_excess_return_5d",
+                        pd.Series(index=remote_df.index, dtype="float64"),
+                    )
+                )
+                if "realized" not in remote_df.columns:
+                    remote_df["realized"] = 1
+                frames.append(remote_df[[
+                    "strategy_name",
+                    "signal_date",
+                    "ticker",
+                    "actual_outperform",
+                    "actual_excess_return_20d",
+                    "realized",
+                ]].copy())
+        except Exception as exc:  # pragma: no cover - network/config dependent
+            log.warning("Could not load strategy history from Supabase: %s", exc)
+
+        if frames:
+            combined = pd.concat(frames, ignore_index=True, sort=False)
+
+            combined["realized"] = pd.to_numeric(
+                combined["realized"], errors="coerce"
+            ).fillna(0)
+            combined["actual_outperform"] = pd.to_numeric(
+                combined["actual_outperform"], errors="coerce"
+            )
+            combined["actual_excess_return_20d"] = pd.to_numeric(
+                combined["actual_excess_return_20d"], errors="coerce"
+            )
+            # If the same row exists locally and remotely, keep the realized
+            # copy and prefer the row that contains the executable return.
+            key_columns = ["strategy_name", "signal_date", "ticker"]
+            if set(key_columns).issubset(combined.columns):
+                combined["_has_return"] = combined[
+                    "actual_excess_return_20d"
+                ].notna().astype(int)
+                combined = combined.sort_values(
+                    key_columns + ["realized", "_has_return"],
+                    ascending=[True, True, True, False, False],
+                    kind="stable",
+                ).drop_duplicates(key_columns, keep="first")
+            df = combined[
+                combined["realized"].eq(1)
+                & combined["actual_outperform"].notna()
+            ][[
+                "strategy_name",
+                "actual_outperform",
+                "actual_excess_return_20d",
+            ]].copy()
+        else:
+            df = local_df
 
         strat_names = [s.name for s in self.strategies]
         weights = {name: 1.0 for name in strat_names}
@@ -126,7 +229,7 @@ class StrategyManager:
         grouped = df.groupby("strategy_name").agg(
             count=("actual_outperform", "count"),
             win_rate=("actual_outperform", "mean"),
-            avg_return=("actual_excess_return_5d", "mean"),
+            avg_return=("actual_excess_return_20d", "mean"),
         ).reset_index()
 
         for _, row in grouped.iterrows():
@@ -210,6 +313,7 @@ class StrategyManager:
                 continue
             updates.append((
                 float(actual["actual_excess_return"]),
+                float(actual["actual_excess_return"]),
                 int(actual["actual_outperform"]),
                 int(row["id"]),
             ))
@@ -219,7 +323,8 @@ class StrategyManager:
         conn = get_conn()
         conn.executemany(
             """UPDATE strategy_performance
-               SET actual_excess_return_5d = ?, actual_outperform = ?, realized = 1
+               SET actual_excess_return_5d = ?, actual_excess_return_20d = ?,
+                   actual_outperform = ?, realized = 1
                WHERE id = ?""",
             updates,
         )
@@ -237,7 +342,9 @@ class StrategyManager:
                       COUNT(*) as total,
                       SUM(CASE WHEN realized=1 THEN 1 ELSE 0 END) as realized_count,
                       AVG(CASE WHEN realized=1 THEN actual_outperform ELSE NULL END) as win_rate,
-                      AVG(CASE WHEN realized=1 THEN actual_excess_return_5d ELSE NULL END) as avg_return
+                      AVG(CASE WHEN realized=1
+                          THEN COALESCE(actual_excess_return_20d, actual_excess_return_5d)
+                          ELSE NULL END) as avg_return
                FROM strategy_performance
                GROUP BY strategy_name
                ORDER BY win_rate DESC NULLS LAST""",

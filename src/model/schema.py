@@ -2,9 +2,11 @@
 
 The production model intentionally uses only point-in-time-safe technical
 features plus the historical VND/USD series. Current Yahoo ``info`` snapshots
-and synthetic macro values are still available to the standalone strategies,
-but are not allowed into the supervised model because they would leak future
-information into historical training rows.
+and unavailable macro releases are kept outside the supervised model because
+they would leak future information into historical training rows. The
+production T+20 target can
+use the same executable next-open/T+2/SL/TP mechanics as the actuals tracker;
+legacy close-to-close columns remain supported.
 """
 
 from __future__ import annotations
@@ -17,7 +19,7 @@ FEATURE_COLS = [
     "vndusd",
 ]
 
-MODEL_VERSION = "xgboost_technical_v2"
+MODEL_VERSION = "xgboost_technical_v5_execution_primary"
 
 TARGET_COL = "outperform_5d"
 

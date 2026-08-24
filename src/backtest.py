@@ -11,14 +11,39 @@ import xgboost as xgb
 from src.config import Config
 from src.database import get_conn, init_db
 from src.model.schema import FEATURE_COLS, TARGET_COL, XGBOOST_PARAMS
+from src.model.splits import (
+    purged_recent_train_window,
+    purged_train_test_split,
+    recent_date_window,
+    require_columns,
+    require_label_end_columns,
+)
+from src.model.targets import resolve_target_spec
+from src.model.blend import blend_horizon_scores
 
 log = logging.getLogger(__name__)
 
 
-def _load_backtest_prices(ticker: str, cache: dict[str, pd.DataFrame]) -> pd.DataFrame:
+def _price_metadata(prices: pd.DataFrame) -> tuple[list[str], dict[str, int]]:
+    """Cache normalized date lookups on a loaded price frame."""
+    date_keys = prices.attrs.get("_date_keys")
+    date_to_idx = prices.attrs.get("_date_to_idx")
+    if date_keys is None or date_to_idx is None:
+        date_keys = prices["date"].dt.strftime("%Y-%m-%d").tolist()
+        date_to_idx = {key: idx for idx, key in enumerate(date_keys)}
+        prices.attrs["_date_keys"] = date_keys
+        prices.attrs["_date_to_idx"] = date_to_idx
+    return date_keys, date_to_idx
+
+
+def _load_backtest_prices(
+    ticker: str,
+    cache: dict[str, pd.DataFrame],
+    data_dir: str | Path = "data/raw",
+) -> pd.DataFrame:
     if ticker in cache:
         return cache[ticker]
-    path = Path("data/raw") / f"{ticker}_raw.parquet"
+    path = Path(data_dir) / f"{ticker}_raw.parquet"
     if not path.exists():
         cache[ticker] = pd.DataFrame()
         return cache[ticker]
@@ -26,7 +51,30 @@ def _load_backtest_prices(ticker: str, cache: dict[str, pd.DataFrame]) -> pd.Dat
     prices["date"] = pd.to_datetime(prices["date"], errors="coerce").dt.normalize()
     prices = prices.dropna(subset=["date", "close"]).drop_duplicates("date").sort_values("date")
     cache[ticker] = prices.reset_index(drop=True)
+    _price_metadata(cache[ticker])
     return cache[ticker]
+
+
+def _holding_period_end_date(
+    ticker: str,
+    signal_date: str,
+    holding_period: int,
+    prices_cache: dict[str, pd.DataFrame],
+    *,
+    data_dir: str | Path = "data/raw",
+) -> str | None:
+    """Return the full-horizon stock session used for purging a label."""
+    stock = _load_backtest_prices(ticker, prices_cache, data_dir)
+    if stock.empty:
+        return None
+    dates, date_to_idx = _price_metadata(stock)
+    if signal_date not in date_to_idx:
+        return None
+    entry_idx = date_to_idx[signal_date] + 1
+    future = stock.iloc[entry_idx: entry_idx + holding_period]
+    if len(future) < holding_period:
+        return None
+    return pd.Timestamp(future.iloc[-1]["date"]).date().isoformat()
 
 
 def _sltp_excess_return(
@@ -37,16 +85,18 @@ def _sltp_excess_return(
     holding_period: int,
     prices_cache: dict[str, pd.DataFrame],
     round_trip_cost: float = 0.0,
+    *,
+    data_dir: str | Path = "data/raw",
 ) -> float | None:
     """Apply SL/TP to raw OHLC bars, then subtract benchmark return."""
-    stock = _load_backtest_prices(ticker, prices_cache)
-    benchmark = _load_backtest_prices("VNINDEX", prices_cache)
+    stock = _load_backtest_prices(ticker, prices_cache, data_dir)
+    benchmark = _load_backtest_prices("VNINDEX", prices_cache, data_dir)
     if stock.empty or benchmark.empty:
         return None
-    dates = stock["date"].dt.strftime("%Y-%m-%d").tolist()
-    if signal_date not in dates:
+    dates, date_to_idx = _price_metadata(stock)
+    if signal_date not in date_to_idx:
         return None
-    idx = dates.index(signal_date)
+    idx = date_to_idx[signal_date]
     entry_idx = idx + 1
     future = stock.iloc[entry_idx: entry_idx + holding_period]
     if future.empty or len(future) < holding_period:
@@ -74,14 +124,25 @@ def _sltp_excess_return(
         exit_price = float(row.close)
         exit_date = str(row.date)[:10]
 
-    bm = benchmark.set_index(benchmark["date"].dt.strftime("%Y-%m-%d"))["close"]
-    benchmark_entry = bm.loc[dates[entry_idx]] if dates[entry_idx] in bm.index else np.nan
-    if pd.isna(benchmark_entry) and signal_date in bm.index:
-        benchmark_entry = bm.loc[signal_date]
-    if exit_date not in bm.index or pd.isna(benchmark_entry) or float(benchmark_entry) == 0:
+    benchmark_indexed = benchmark.attrs.get("_benchmark_indexed")
+    if benchmark_indexed is None:
+        benchmark_indexed = benchmark.set_index(benchmark["date"].dt.strftime("%Y-%m-%d"))
+        benchmark.attrs["_benchmark_indexed"] = benchmark_indexed
+    benchmark_close = benchmark_indexed["close"]
+    benchmark_entry_series = (
+        benchmark_indexed["open"]
+        if "open" in benchmark_indexed.columns
+        else benchmark_close
+    )
+    benchmark_entry = (
+        benchmark_entry_series.loc[dates[entry_idx]]
+        if dates[entry_idx] in benchmark_entry_series.index
+        else np.nan
+    )
+    if exit_date not in benchmark_close.index or pd.isna(benchmark_entry) or float(benchmark_entry) == 0:
         return None
     stock_return = (exit_price - entry) / entry - round_trip_cost
-    benchmark_return = (float(bm.loc[exit_date]) - float(benchmark_entry)) / float(benchmark_entry)
+    benchmark_return = (float(benchmark_close.loc[exit_date]) - float(benchmark_entry)) / float(benchmark_entry)
     return stock_return - benchmark_return
 
 
@@ -103,13 +164,16 @@ def backtest_sltp(
     df = df.rename(columns={"ensemble_score": "score"}).dropna(subset=["score"]).sort_values("date")
     dates = sorted(df["date"].unique())
     split_idx = int(len(dates) * 0.6)
+    validation_dates = dates[:split_idx]
     test_dates = dates[split_idx:]
+    if len(validation_dates) < 10 or len(test_dates) < 10:
+        log.warning("Not enough OOS dates for separate SL/TP validation and test periods")
+        return pd.DataFrame()
     prices_cache: dict[str, pd.DataFrame] = {}
 
-    results = []
-    for sl, tp in product(sl_levels, tp_levels):
+    def evaluate_dates(level_sl: float, level_tp: float, evaluation_dates: list) -> pd.Series:
         daily_rets = []
-        for d in test_dates:
+        for d in evaluation_dates:
             day = df[df["date"] == d]
             picks = day.sort_values("score", ascending=False).head(3)
             if picks.empty:
@@ -118,8 +182,8 @@ def backtest_sltp(
                 _sltp_excess_return(
                     str(row.ticker),
                     pd.Timestamp(d).date().isoformat(),
-                    sl,
-                    tp,
+                    level_sl,
+                    level_tp,
                     holding_period,
                     prices_cache,
                     round_trip_cost,
@@ -129,30 +193,49 @@ def backtest_sltp(
             returns = [value for value in returns if value is not None]
             if returns:
                 daily_rets.append(float(np.mean(returns)))
+        return pd.Series(daily_rets)
 
-        rets = pd.Series(daily_rets)
-        if len(rets) < 10:
+    def summarize(returns: pd.Series) -> dict[str, float] | None:
+        if len(returns) < 10:
+            return None
+        avg_ret = float(returns.mean())
+        volatility = float(returns.std())
+        equity = (1 + returns).cumprod()
+        drawdown = equity / equity.cummax() - 1
+        return {
+            "days": len(returns),
+            "win_rate": float((returns > 0).mean()),
+            "avg_return": avg_ret,
+            "cum_return": float(equity.iloc[-1] - 1),
+            "sharpe": (avg_ret / volatility * np.sqrt(252)) if volatility > 0 else 0.0,
+            "max_dd": float(drawdown.min()),
+        }
+
+    results = []
+    for sl, tp in product(sl_levels, tp_levels):
+        validation = summarize(evaluate_dates(sl, tp, validation_dates))
+        test = summarize(evaluate_dates(sl, tp, test_dates))
+        if validation is None or test is None:
             continue
-        win_rate = (rets > 0).mean()
-        avg_ret = rets.mean()
-        cum_ret = (1 + rets).prod() - 1
-        sharpe = (avg_ret / rets.std() * np.sqrt(252)) if rets.std() > 0 else 0.0
-        peak = (1 + rets).cummax()
-        dd = ((1 + rets).cumprod() - peak) / peak
-        max_dd = dd.min()
 
         results.append({
             "stop_loss": sl, "take_profit": tp,
-            "days": len(rets), "win_rate": win_rate,
-            "avg_return": avg_ret, "cum_return": cum_ret,
-            "sharpe": sharpe, "max_dd": max_dd,
+            "validation_sharpe": validation["sharpe"],
+            "validation_avg_return": validation["avg_return"],
+            "validation_days": validation["days"],
+            "days": test["days"],
+            "win_rate": test["win_rate"],
+            "avg_return": test["avg_return"],
+            "cum_return": test["cum_return"],
+            "sharpe": test["sharpe"],
+            "max_dd": test["max_dd"],
         })
 
     res = pd.DataFrame(results)
     if res.empty:
         return res
-    res = res.sort_values("sharpe", ascending=False)
-    print(f"{'SL':>7} | {'TP':>7} | {'Days':>5} | {'WinRate':>8} | {'AvgRet':>9} | {'CumRet':>10} | {'Sharpe':>7} | {'MaxDD':>7}")
+    res = res.sort_values(["validation_sharpe", "sharpe"], ascending=False)
+    print(f"{'SL':>7} | {'TP':>7} | {'Days':>5} | {'WinRate':>8} | {'AvgRet':>9} | {'CumRet':>10} | {'TestSharpe':>10} | {'MaxDD':>7}")
     print("=" * 75)
     for _, r in res.iterrows():
         print(f"{r['stop_loss']:>+6.0%} | {r['take_profit']:>+6.0%} | {r['days']:>5} | {r['win_rate']:>7.1%} | {r['avg_return']:>+8.2%} | {r['cum_return']:>+9.2%} | {r['sharpe']:>+6.2f} | {r['max_dd']:>6.2%}")
@@ -162,13 +245,31 @@ def backtest_sltp(
 def train_ensemble_models() -> dict[int, xgb.XGBClassifier]:
     df = pd.read_parquet("data/processed/features.parquet")
     horizons = [1, 5, 10, 20]
+    config = Config()
+    specs = {
+        h: resolve_target_spec(
+            df,
+            h,
+            prefer_execution=config.execution_target_enabled,
+        )
+        for h in horizons
+    }
+    require_columns(
+        df,
+        [spec.label_end_col for spec in specs.values()],
+        description="label maturity metadata",
+    )
     models = {}
     for h in horizons:
-        target = f"outperform_{h}d"
+        spec = specs[h]
+        target = spec.target_col
         if target not in df.columns:
             log.warning("Skipping horizon %d: column %s not found", h, target)
             continue
-        train = df.dropna(subset=FEATURE_COLS + [target]).sort_values("date")
+        train = df.dropna(
+            subset=FEATURE_COLS + [target, spec.label_end_col]
+        ).sort_values("date")
+        train = recent_date_window(train, config.model_training_days)
         if len(train) < 100:
             continue
         y = train[target]
@@ -188,35 +289,68 @@ def ensemble_predict(models: dict[int, xgb.XGBClassifier]) -> pd.DataFrame:
         df_temp = df[FEATURE_COLS].fillna(0)
         scores[f"score_{h}d"] = model.predict_proba(df_temp)[:, 1]
     scores_df = pd.DataFrame(scores, index=df.index)
-    score_cols = [c for c in scores_df.columns if c.startswith("score_")]
-    scores_df["ensemble_score"] = scores_df[score_cols].mean(axis=1)
-    scores_df["ensemble_max"] = scores_df[score_cols].max(axis=1)
     result = df.copy()
+    score_cols = [c for c in scores_df.columns if c.startswith("score_")]
     for c in score_cols:
         result[c] = scores_df[c]
-    result["ensemble_score"] = scores_df["ensemble_score"]
-    result["ensemble_max"] = scores_df["ensemble_max"]
+    config = Config()
+    result["ensemble_score"] = blend_horizon_scores(
+        result,
+        [int(c.removeprefix("score_").removesuffix("d")) for c in score_cols],
+        weights=config.ensemble_horizon_weights,
+        mode=config.ensemble_blend_mode,
+    )
+    result["ensemble_max"] = result[score_cols].max(axis=1)
     return result
 
 
-def walk_forward_ensemble_predictions(min_train_dates: int = 60) -> pd.DataFrame:
+def walk_forward_ensemble_predictions(
+    min_train_dates: int = 60,
+    max_train_dates: int | None = None,
+) -> pd.DataFrame:
     """Generate strictly out-of-sample ensemble scores one date at a time."""
-    df = pd.read_parquet("data/processed/features.parquet").sort_values("date")
+    if max_train_dates is None:
+        max_train_dates = Config().model_training_days
+    df = pd.read_parquet("data/processed/features.parquet").copy()
+    df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.normalize()
+    df = df.dropna(subset=["date"]).sort_values("date")
+    config = Config()
+    specs = {
+        h: resolve_target_spec(
+            df,
+            h,
+            prefer_execution=config.execution_target_enabled,
+        )
+        for h in [1, 5, 10, 20]
+    }
     horizons = [
         h for h in [1, 5, 10, 20]
-        if f"outperform_{h}d" in df.columns and f"excess_return_{h}d" in df.columns
+        if specs[h].target_col in df.columns and specs[h].return_col in df.columns
     ]
+    require_columns(
+        df,
+        [specs[h].label_end_col for h in horizons],
+        description="label maturity metadata",
+    )
     dates = sorted(df["date"].dropna().unique())
     if len(dates) <= min_train_dates or not horizons:
         return pd.DataFrame()
 
     predictions: list[pd.DataFrame] = []
     for test_date in dates[min_train_dates:]:
-        train = df[df["date"] < test_date]
+        test_date = pd.Timestamp(test_date).normalize()
         test = df[df["date"] == test_date].copy()
         score_cols: list[str] = []
         for horizon in horizons:
-            target = f"outperform_{horizon}d"
+            spec = specs[horizon]
+            target = spec.target_col
+            label_end_col = spec.label_end_col
+            train = purged_recent_train_window(
+                df,
+                test_start=test_date,
+                label_end_col=label_end_col,
+                max_dates=max_train_dates,
+            )
             train_clean = train.dropna(subset=FEATURE_COLS + [target])
             if len(train_clean) < 100 or train_clean[target].nunique() < 2:
                 continue
@@ -231,22 +365,41 @@ def walk_forward_ensemble_predictions(min_train_dates: int = 60) -> pd.DataFrame
             score_cols.append(score_col)
 
         if score_cols:
-            test["ensemble_score"] = test[score_cols].mean(axis=1)
+            test["ensemble_score"] = blend_horizon_scores(
+                test,
+                [int(c.removeprefix("score_").removesuffix("d")) for c in score_cols],
+                weights=config.ensemble_horizon_weights,
+                mode=config.ensemble_blend_mode,
+            )
             test["ensemble_max"] = test[score_cols].max(axis=1)
             predictions.append(test)
 
     return pd.concat(predictions, ignore_index=True) if predictions else pd.DataFrame()
 
 
-def backtest_ensemble(min_train_dates: int = 60) -> pd.DataFrame:
+def backtest_ensemble(
+    min_train_dates: int = 60,
+    max_train_dates: int | None = None,
+) -> pd.DataFrame:
     """Evaluate the ensemble on dates whose models were trained beforehand."""
-    df = walk_forward_ensemble_predictions(min_train_dates=min_train_dates)
+    df = walk_forward_ensemble_predictions(
+        min_train_dates=min_train_dates,
+        max_train_dates=max_train_dates,
+    )
     if df.empty:
         log.warning("No out-of-sample ensemble predictions available")
         return pd.DataFrame()
+    specs = {
+        h: resolve_target_spec(
+            df,
+            h,
+            prefer_execution=Config().execution_target_enabled,
+        )
+        for h in [1, 5, 10, 20]
+    }
     models = {
         h for h in [1, 5, 10, 20]
-        if f"score_{h}d" in df.columns and f"excess_return_{h}d" in df.columns
+        if f"score_{h}d" in df.columns and specs[h].return_col in df.columns
     }
 
     results = []
@@ -254,13 +407,14 @@ def backtest_ensemble(min_train_dates: int = 60) -> pd.DataFrame:
         for h in models:
             for n in [1, 3, 5]:
                 daily_rets = []
-                usable = df.dropna(subset=[col, f"excess_return_{h}d"])
+                return_col = specs[h].return_col
+                usable = df.dropna(subset=[col, return_col])
                 for d in sorted(usable["date"].unique()):
                     day = usable[usable["date"] == d]
                     picks = day.sort_values(col, ascending=False).head(n)
                     if picks.empty:
                         continue
-                    daily_rets.append(picks[f"excess_return_{h}d"].mean())
+                    daily_rets.append(picks[return_col].mean())
                 rets = pd.Series(daily_rets)
                 if len(rets) < 10:
                     continue
@@ -294,7 +448,10 @@ def auto_retrain() -> dict[str, float]:
     """
     init_db()
     df = pd.read_parquet("data/processed/features.parquet")
-    df = df.dropna(subset=FEATURE_COLS + [TARGET_COL]).copy()
+    horizon = int(TARGET_COL.rsplit("_", 1)[-1].removesuffix("d"))
+    label_end_col = f"label_end_date_{horizon}d"
+    require_label_end_columns(df, [horizon])
+    df = df.dropna(subset=FEATURE_COLS + [TARGET_COL, label_end_col]).copy()
     df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.normalize()
     df = df.dropna(subset=["date"]).sort_values("date")
     dates = sorted(df["date"].unique())
@@ -304,16 +461,17 @@ def auto_retrain() -> dict[str, float]:
     last_date = conn.execute("SELECT MAX(signal_date) FROM signals").fetchone()[0]
     conn.close()
 
-    horizon = int(TARGET_COL.rsplit("_", 1)[-1].removesuffix("d"))
     split = int(len(dates) * 0.8)
-    train_end = split - horizon
-    if train_end <= 0 or split >= len(dates):
+    if split <= 0 or split >= len(dates):
         raise ValueError("Not enough dated rows for purged auto-retrain evaluation")
 
-    train_dates = set(dates[:train_end])
-    test_dates = dates[split:]
-    train = df[df["date"].isin(train_dates)]
-    test = df[df["date"].isin(test_dates)]
+    test_start = pd.Timestamp(dates[split]).normalize()
+    train, test = purged_train_test_split(
+        df,
+        test_start=test_start,
+        label_end_col=label_end_col,
+    )
+    train = recent_date_window(train, Config().model_training_days)
     if train.empty or test.empty or train[TARGET_COL].nunique() < 2:
         raise ValueError("Not enough dated rows or target classes for auto-retrain evaluation")
 
@@ -352,7 +510,10 @@ def auto_retrain() -> dict[str, float]:
 def backtest_score_validation(min_train_dates: int = 60) -> None:
     """Walk-forward: compare top 3 vs bottom 3 by score using T+5 excess return."""
     df = pd.read_parquet("data/processed/features.parquet")
-    df = df.dropna(subset=FEATURE_COLS + ["excess_return_5d"]).sort_values("date")
+    require_label_end_columns(df, [5])
+    df = df.dropna(
+        subset=FEATURE_COLS + ["outperform_5d", "excess_return_5d", "label_end_date_5d"]
+    ).sort_values("date")
     dates = sorted(df["date"].unique())
 
     if len(dates) < min_train_dates + 10:
@@ -364,10 +525,12 @@ def backtest_score_validation(min_train_dates: int = 60) -> None:
     spread_results: list[float] = []
 
     for i in range(min_train_dates, len(dates)):
-        train_end = dates[i - 1]
-        test_date = dates[i]
-
-        train = df[df["date"] <= train_end]
+        test_date = pd.Timestamp(dates[i]).normalize()
+        train, _ = purged_train_test_split(
+            df,
+            test_start=test_date,
+            label_end_col="label_end_date_5d",
+        )
         test = df[df["date"] == test_date]
 
         if len(train) < 100 or len(test) < 10:

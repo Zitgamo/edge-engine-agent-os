@@ -10,11 +10,22 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 log = logging.getLogger(__name__)
 
 
+def _configure_console_encoding() -> None:
+    """Keep Vietnamese CLI help usable on Windows code pages."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            continue
+
+
 def main() -> None:
+    _configure_console_encoding()
     if len(sys.argv) < 2:
         print("Usage: python -m src.cli <command>")
         print("Commands:")
         print("  pipeline          Run full pipeline")
+        print("  pipeline-force    Rebuild/train/publish latest closed session")
         print("  backfill          Backfill actual T+20 performance")
         print("  summary           Show performance summary")
         print("  signal            Show latest signal")
@@ -24,6 +35,8 @@ def main() -> None:
         print("  telegram-test     Test Telegram notification")
         print("  sync-cloud        Sync local SQLite data to Supabase")
         print("  accumulation      Tích sản backtest (use: accumulation HPG or accumulation all)")
+        print("  strategy-attribution  Show de-duplicated realized strategy attribution")
+        print("  paper-test        Show cost-aware independent basket readiness")
         return
 
     cmd = sys.argv[1]
@@ -31,6 +44,10 @@ def main() -> None:
     if cmd == "pipeline":
         from src.pipeline import run_pipeline
         run_pipeline()
+
+    elif cmd == "pipeline-force":
+        from src.pipeline import run_pipeline
+        run_pipeline(force=True)
 
     elif cmd == "backfill":
         from src.database import backfill_actuals
@@ -43,15 +60,44 @@ def main() -> None:
         sm.backfill_strategy_actuals()
         sm.show_comparison()
         weights = sm.get_strategy_weights()
-        print(f"\nEnsemble weights (no hard switch):")
+        print("\nEnsemble weights (no hard switch):")
         for name, w in sorted(weights.items(), key=lambda x: -x[1]):
             print(f"  {name:<20} weight={w:.2f}")
 
+    elif cmd == "strategy-attribution":
+        from src.research.strategy_attribution import load_realized_strategy_attribution
+
+        attribution = load_realized_strategy_attribution(round_trip_cost=0.0)
+        if attribution.empty:
+            print("No realized strategy trades yet.")
+        else:
+            print(attribution.to_string(index=False))
+
+    elif cmd == "paper-test":
+        from src.config import Config
+        from src.research.paper_test import load_paper_test_readiness
+
+        config = Config()
+        report = load_paper_test_readiness()
+        print(
+            f"Paper-test cost={config.round_trip_cost:.2%}; "
+            "a basket requires 3 executable picks; minimum=30, target=50 baskets"
+        )
+        if report.empty:
+            print("No strategy signals or complete executable baskets yet.")
+        else:
+            print(report.to_string(index=False))
+
     elif cmd == "summary":
-        from src.database import get_conn
+        from src.database import get_conn, init_db
+        init_db()
         conn = get_conn()
         actuals = pd.read_sql_query(
-            """SELECT a.signal_date, a.ticker, a.actual_excess_return_5d, a.actual_outperform,
+            """SELECT a.signal_date, a.ticker,
+                      COALESCE(a.actual_excess_return_20d, a.actual_excess_return_5d)
+                      AS execution_excess_return,
+                      a.actual_stock_return, a.benchmark_return,
+                      a.actual_outperform,
                       s.score, s.ensemble_score, s.rank
                FROM actuals a
                LEFT JOIN signals s ON a.signal_date = s.signal_date AND a.ticker = s.ticker
@@ -73,24 +119,52 @@ def main() -> None:
         if actuals.empty:
             print("No performance data yet. Run 'pipeline' first (backfill is automatic now).")
             return
+        from src.actuals import add_execution_excess_column
+        actuals = add_execution_excess_column(actuals)
+        actuals["execution_excess_return"] = pd.to_numeric(
+            actuals["execution_excess_return"], errors="coerce"
+        ).astype(float)
+        actuals = actuals[actuals["execution_excess_return"].notna()].copy()
+        if actuals.empty:
+            print("No realized performance data yet. Run 'pipeline' first.")
+            return
         total = len(actuals)
         win_rate = actuals["actual_outperform"].mean()
-        avg_ret = actuals["actual_excess_return_5d"].mean()
-        sharpe = (avg_ret / actuals["actual_excess_return_5d"].std() * np.sqrt(252 / 20)) if actuals["actual_excess_return_5d"].std() > 0 else 0.0
-        best = actuals.loc[actuals["actual_excess_return_5d"].idxmax(), "ticker"] if total > 0 else "N/A"
-        worst = actuals.loc[actuals["actual_excess_return_5d"].idxmin(), "ticker"] if total > 0 else "N/A"
+        avg_ret = actuals["execution_excess_return"].mean()
+        sharpe = (avg_ret / actuals["execution_excess_return"].std() * np.sqrt(252 / 20)) if actuals["execution_excess_return"].std() > 0 else 0.0
+        best = actuals.loc[actuals["execution_excess_return"].idxmax(), "ticker"] if total > 0 else "N/A"
+        worst = actuals.loc[actuals["execution_excess_return"].idxmin(), "ticker"] if total > 0 else "N/A"
         dates = actuals["signal_date"].nunique()
         print(f"\n{'='*55}")
         print(f"  PERFORMANCE SUMMARY (from {total} actuals across {dates} trading days)")
         print(f"{'='*55}")
         print(f"  Win Rate:      {win_rate:>7.1%}   ({actuals['actual_outperform'].sum():.0f}/{total} wins)")
         print(f"  Avg Excess Ret:{avg_ret:>+7.2%}   per T+20 trade")
+        if "actual_stock_return" in actuals.columns:
+            stock_return = pd.to_numeric(actuals["actual_stock_return"], errors="coerce").dropna()
+            if not stock_return.empty:
+                absolute_wr = float((stock_return > 0).mean())
+                avg_stock_return = float(stock_return.mean())
+                wins = stock_return[stock_return > 0]
+                losses = stock_return[stock_return < 0]
+                realized_rr = (
+                    float(wins.mean() / abs(losses.mean()))
+                    if not wins.empty and not losses.empty and losses.mean() != 0
+                    else float("nan")
+                )
+                print(f"  Absolute ROI:  {avg_stock_return:>+7.2%}   avg net stock return")
+                print(f"  Absolute WR:   {absolute_wr:>7.1%}   profitable stock trades")
+                print(f"  Realized R:R:  {realized_rr:>7.2f}   avg win / avg loss")
+        if "benchmark_return" in actuals.columns:
+            benchmark_return = pd.to_numeric(actuals["benchmark_return"], errors="coerce").dropna()
+            if not benchmark_return.empty:
+                print(f"  Avg VNINDEX:   {benchmark_return.mean():>+7.2%}   during held trades")
         print(f"  Sharpe (ann):  {sharpe:>+7.2f}")
-        print(f"  Best pick:     {best:>6}   ({actuals.loc[actuals['actual_excess_return_5d'].idxmax(), 'actual_excess_return_5d']:>+7.2%})" if total > 0 else "")
-        print(f"  Worst pick:    {worst:>6}   ({actuals.loc[actuals['actual_excess_return_5d'].idxmin(), 'actual_excess_return_5d']:>+7.2%})" if total > 0 else "")
+        print(f"  Best pick:     {best:>6}   ({actuals.loc[actuals['execution_excess_return'].idxmax(), 'execution_excess_return']:>+7.2%})" if total > 0 else "")
+        print(f"  Worst pick:    {worst:>6}   ({actuals.loc[actuals['execution_excess_return'].idxmin(), 'execution_excess_return']:>+7.2%})" if total > 0 else "")
         print()
-        print(f"  Top 5 by avg excess return:")
-        top5 = actuals.groupby("ticker")["actual_excess_return_5d"].agg(["mean", "count", "sum"]).sort_values("mean", ascending=False).head(5)
+        print("  Top 5 by avg excess return:")
+        top5 = actuals.groupby("ticker")["execution_excess_return"].agg(["mean", "count", "sum"]).sort_values("mean", ascending=False).head(5)
         for t, r in top5.iterrows():
             print(f"    {t:<6} avg {r['mean']:>+7.2%}  ({r['count']:.0f} signals)")
         print()
@@ -123,6 +197,8 @@ def main() -> None:
         if df.empty:
             print("No history yet. Run 'pipeline' first.")
             return
+        from src.actuals import add_execution_excess_column
+        df = add_execution_excess_column(df)
 
         df = df.sort_values(["signal_date", "rank"])
         dates = df["signal_date"].nunique()
@@ -133,32 +209,32 @@ def main() -> None:
         print(f"{'='*70}")
         for d in sorted(df["signal_date"].unique(), reverse=True):
             day = df[df["signal_date"] == d]
-            realized = day["actual_excess_return_5d"].notna().any()
+            realized = day["execution_excess_return"].notna().any()
             print(f"\n  {d} {'(actuals available)' if realized else '(pending...)'}")
             print(f"  {'Rank':<4} {'Ticker':<6} {'Score':<8} {'ExRet':<9} {'Outperform':<10}")
             print(f"  {'-'*37}")
             for _, r in day.iterrows():
-                er = f"{r['actual_excess_return_5d']:>+7.2%}" if pd.notna(r.get("actual_excess_return_5d")) else "     N/A"
+                er = f"{r['execution_excess_return']:>+7.2%}" if pd.notna(r.get("execution_excess_return")) else "     N/A"
                 op = "WIN " if r.get("actual_outperform") == 1 else ("LOSS" if r.get("actual_outperform") == 0 else "N/A  ")
                 print(f"  {int(r['rank']):<4} {r['ticker']:<6} {r['score']:<8.4f} {er:<9} {op:<10}")
 
         print(f"\n{'='*70}")
-        print(f"  TRACKER SUMMARY")
+        print("  TRACKER SUMMARY")
         print(f"{'='*70}")
-        realized = df[df["actual_excess_return_5d"].notna()]
+        realized = df[df["execution_excess_return"].notna()]
         if not realized.empty:
             wr = realized["actual_outperform"].mean()
-            avg_ret = realized["actual_excess_return_5d"].mean()
-            best = realized.loc[realized["actual_excess_return_5d"].idxmax()]
-            worst = realized.loc[realized["actual_excess_return_5d"].idxmin()]
+            avg_ret = realized["execution_excess_return"].mean()
+            best = realized.loc[realized["execution_excess_return"].idxmax()]
+            worst = realized.loc[realized["execution_excess_return"].idxmin()]
             print(f"  Overall Win Rate:  {wr:>7.1%} ({realized['actual_outperform'].sum():.0f}/{len(realized)} picks)")
             print(f"  Avg Excess Return: {avg_ret:>+7.2%}")
-            print(f"  Best pick:         {best['ticker']} on {best['signal_date']} ({best['actual_excess_return_5d']:>+7.2%})")
-            print(f"  Worst pick:        {worst['ticker']} on {worst['signal_date']} ({worst['actual_excess_return_5d']:>+7.2%})")
+            print(f"  Best pick:         {best['ticker']} on {best['signal_date']} ({best['execution_excess_return']:>+7.2%})")
+            print(f"  Worst pick:        {worst['ticker']} on {worst['signal_date']} ({worst['execution_excess_return']:>+7.2%})")
 
-            print(f"\n  Top tickers by avg excess return:")
+            print("\n  Top tickers by avg excess return:")
             top = realized.groupby("ticker").agg(
-                avg_ret=("actual_excess_return_5d", "mean"),
+                avg_ret=("execution_excess_return", "mean"),
                 count=("actual_outperform", "count"),
                 wins=("actual_outperform", "sum"),
             ).sort_values("avg_ret", ascending=False).head(10)
@@ -177,7 +253,7 @@ def main() -> None:
             print("No results — check ticker symbols")
             return
         print(f"\n{'='*75}")
-        print(f"  CEILING/FLOOR CONTEXT ANALYSIS")
+        print("  CEILING/FLOOR CONTEXT ANALYSIS")
         print(f"{'='*75}")
         print(f"  {'Ticker':<6} {'Context':<20} {'Drawdown':<10} {'Floors':<8} {'Ceilings':<10} {'Adj':<6}")
         print(f"  {'-'*60}")
@@ -205,7 +281,7 @@ def main() -> None:
         from src.accumulation import backtest_tich_san, backtest_multi, print_report
         if len(sys.argv) > 2 and sys.argv[2] == "all":
             df = backtest_multi(top_n=10)
-            print(f"\nTop 10 by CAGR:")
+            print("\nTop 10 by CAGR:")
             print(df.head(10).to_string(index=False))
         else:
             ticker = sys.argv[2] if len(sys.argv) > 2 else "HPG"

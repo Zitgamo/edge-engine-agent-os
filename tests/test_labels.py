@@ -30,6 +30,8 @@ class TestOutperformanceLabel:
         result = OutperformanceLabel().compute(stock_df, benchmark_df)
         assert "outperform_5d" in result.columns
         assert "excess_return_5d" in result.columns
+        assert "label_end_date_5d" in result.columns
+        assert result.loc[0, "label_end_date_5d"] == stock_df.loc[5, "date"]
 
     def test_label_is_binary(self, stock_df: pd.DataFrame, benchmark_df: pd.DataFrame) -> None:
         result = OutperformanceLabel().compute(stock_df, benchmark_df).dropna()

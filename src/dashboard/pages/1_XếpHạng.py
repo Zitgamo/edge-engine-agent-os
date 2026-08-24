@@ -47,6 +47,9 @@ if df.empty:
     st.info("No signals yet. Pipeline runs daily at 8 AM VN time.")
     st.stop()
 
+from src.actuals import add_execution_excess_column
+df = add_execution_excess_column(df)
+
 df["signal_date"] = pd.to_datetime(df["signal_date"])
 df["score_pct"] = df["score"].apply(lambda x: f"{x:.2%}")
 
@@ -66,7 +69,7 @@ display["date_str"] = display["signal_date"].dt.strftime("%d/%m/%Y")
 display["result"] = display["actual_outperform"].apply(
     lambda x: "WIN" if x == 1 else ("LOSS" if x == 0 else "PENDING")
 )
-display["excess"] = display["actual_excess_return_5d"].apply(
+display["excess"] = display["execution_excess_return"].apply(
     lambda x: f"{x:+.2%}" if pd.notna(x) else "—"
 )
 
@@ -90,7 +93,7 @@ if "actual_outperform" in df.columns:
     realized = df[df["actual_outperform"].notna()]
     if not realized.empty:
         wr = realized["actual_outperform"].mean()
-        avg_ret = realized["actual_excess_return_5d"].mean()
+        avg_ret = realized["execution_excess_return"].mean()
         col1, col2, col3 = st.columns(3)
         col1.metric("Win Rate", f"{wr:.1%}")
         col2.metric("Avg Excess Return", f"{avg_ret:+.2%}")
@@ -101,7 +104,7 @@ if "actual_outperform" in df.columns:
         top = realized.groupby("ticker").agg(
             signals=("actual_outperform", "count"),
             wins=("actual_outperform", "sum"),
-            avg_ret=("actual_excess_return_5d", "mean"),
+            avg_ret=("execution_excess_return", "mean"),
         ).reset_index()
         top["win_rate"] = top["wins"] / top["signals"]
         top = top.sort_values("avg_ret", ascending=False).head(10)

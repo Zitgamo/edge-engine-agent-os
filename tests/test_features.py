@@ -7,6 +7,7 @@ from src.features.returns import ReturnFeatures
 from src.features.rs import RelativeStrength
 from src.features.volatility import ATR
 from src.features.volume import VolumeSurge
+from src.features.fundamental import FundamentalFeatures, HistoricalFundamentalFeatures, add_fundamental_features
 from src.features.macro import MacroFeatures, add_macro_features
 
 
@@ -99,6 +100,34 @@ def test_relative_strength_ignores_non_overlapping_sessions_in_rolling_window() 
     assert pd.notna(result.loc[dates[61], "rs_60d"])
 
 
+def test_relative_strength_values_use_common_sessions_only() -> None:
+    dates = pd.bdate_range("2026-01-01", periods=8)
+    stock = pd.DataFrame({
+        "date": dates,
+        "close": [100.0, 110.0, 130.0, 143.0, 157.3, 173.03, 190.333, 209.3663],
+    })
+    benchmark = pd.DataFrame({
+        "date": dates.delete(2),
+        "close": [100.0, 102.0, 106.0, 111.0, 116.55, 122.3775, 128.4964],
+    })
+
+    result = RelativeStrength().compute(stock, benchmark).set_index("date")
+    common = dates.delete(2)
+    stock_common = stock.set_index("date").loc[common, "close"]
+    benchmark_common = benchmark.set_index("date")["close"]
+    expected = (
+        stock_common.pct_change().rolling(5).sum()
+        - benchmark_common.pct_change().rolling(5).sum()
+    )
+
+    pd.testing.assert_series_equal(
+        result.loc[common, "rs_5d"],
+        expected,
+        check_names=False,
+    )
+    assert pd.isna(result.loc[dates[2], "rs_5d"])
+
+
 def test_macro_features_keep_schema_when_fx_is_unavailable(monkeypatch) -> None:
     monkeypatch.setattr(
         MacroFeatures,
@@ -119,3 +148,60 @@ def test_macro_features_keep_schema_when_fx_is_unavailable(monkeypatch) -> None:
 
     assert "vndusd" in result.columns
     assert result.loc[0, "vndusd"] == 0.0
+
+
+def test_macro_does_not_return_synthetic_sbv_or_cpi_values() -> None:
+    assert MacroFeatures().fetch_sbv_rate().empty
+    assert MacroFeatures().fetch_cpi().empty
+
+
+def test_missing_fundamentals_stay_missing_instead_of_neutral_defaults(monkeypatch) -> None:
+    monkeypatch.setattr(
+        FundamentalFeatures,
+        "fetch_info",
+        lambda self, ticker: {key: None for key in (
+            "trailingPE", "priceToBook", "returnOnEquity", "revenueGrowth",
+            "earningsQuarterlyGrowth", "profitMargins", "debtToEquity",
+            "dividendYield", "marketCap", "forwardPE",
+        )},
+    )
+    frame = pd.DataFrame({
+        "ticker": ["AAA", "AAA"],
+        "date": pd.to_datetime(["2026-01-01", "2026-01-02"]),
+        "close": [100.0, 101.0],
+    })
+
+    result = add_fundamental_features(frame)
+
+    assert pd.isna(result.loc[0, "pe_ratio"])
+    assert pd.isna(result.loc[1, "profit_margin"])
+    assert pd.notna(result.loc[1, "fundamental_snapshot_date"])
+
+
+def test_historical_fundamentals_fail_closed_without_publication_date(monkeypatch) -> None:
+    hff = HistoricalFundamentalFeatures()
+    monkeypatch.setattr(
+        hff,
+        "fetch_quarterly_fundamentals",
+        lambda ticker: pd.DataFrame({
+            "date": pd.to_datetime(["2025-12-31"]),
+            "ticker": [ticker],
+            "eps": [10.0],
+            "bvps": [20.0],
+            "roe": [0.1],
+            "debt_equity": [0.5],
+        }),
+    )
+    prices = pd.DataFrame({
+        "date": pd.to_datetime(["2026-01-02"]),
+        "close": [100.0],
+    })
+    frame = pd.DataFrame({
+        "ticker": ["AAA"],
+        "date": pd.to_datetime(["2026-01-02"]),
+        "close": [100.0],
+    })
+
+    result = hff.add_historical_to_df(frame, {"AAA": prices})
+
+    assert "pe_ratio" not in result.columns

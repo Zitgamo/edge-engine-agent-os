@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
 
 import pandas as pd
 import yfinance as yf
@@ -26,52 +25,49 @@ class MacroFeatures:
             return pd.DataFrame()
 
     def fetch_sbv_rate(self) -> pd.DataFrame:
-        dates = pd.date_range(end=datetime.now(UTC), periods=365, freq="B")
-        base_rate = 4.5
-        return pd.DataFrame({"date": dates, "sbv_rate": base_rate})
+        """Return an empty frame until an as-of-tagged SBV source is wired.
+
+        A constant placeholder rate is not a market observation and can make
+        a historical model appear to have macro coverage it never had.
+        """
+        log.warning("SBV rate source is unavailable; leaving sbv_rate missing")
+        return pd.DataFrame(columns=["date", "sbv_rate"])
 
     def fetch_cpi(self) -> pd.DataFrame:
-        dates = pd.date_range(end=datetime.now(UTC), periods=12, freq="ME")
-        cpi_values = [0.31, 0.35, 0.42, 0.38, 0.45, 0.52, 0.48, 0.55, 0.60, 0.58, 0.62, 0.65]
-        return pd.DataFrame({"date": dates, "cpi_mom": cpi_values[:len(dates)]})
+        """Return an empty frame until CPI release dates are available."""
+        log.warning("CPI source is unavailable; leaving cpi_mom missing")
+        return pd.DataFrame(columns=["date", "cpi_mom"])
 
     def fetch_all(self, days: int = 365) -> pd.DataFrame:
         vnusd = self.fetch_vnusd(days)
         sbv = self.fetch_sbv_rate()
         cpi = self.fetch_cpi()
 
-        # Normalize all dates to tz-naive date-only
+        # Normalize all dates to tz-naive date-only.
         def to_date_str(series):
             return pd.to_datetime(series).dt.tz_localize(None).dt.normalize()
 
-        if not vnusd.empty:
-            vnusd["date"] = to_date_str(vnusd["date"])
-        sbv["date"] = to_date_str(sbv["date"])
-        cpi["date"] = to_date_str(cpi["date"])
+        frames = []
+        for frame in (vnusd, sbv, cpi):
+            if frame.empty:
+                continue
+            frame = frame.copy()
+            frame["date"] = to_date_str(frame["date"])
+            frames.append(frame)
+        if not frames:
+            return pd.DataFrame()
 
-        merged = sbv.copy()
-        if not vnusd.empty:
-            merged = merged.merge(vnusd, on="date", how="left")
-        else:
-            # Keep the feature schema stable when Yahoo temporarily omits
-            # the FX series.  add_macro_features applies the explicit
-            # neutral fallback below instead of letting model training fail
-            # with a missing-column KeyError.
-            merged["vndusd"] = pd.NA
-
-        merged["vndusd"] = merged["vndusd"].ffill()
-
-        merged["cpi_mom"] = 0.0
-        for _, row in cpi.iterrows():
-            month_start = row["date"] - pd.offsets.MonthBegin(1)
-            month_end = row["date"]
-            mask = (merged["date"] >= month_start) & (merged["date"] <= month_end)
-            merged.loc[mask, "cpi_mom"] = row["cpi_mom"]
+        merged = frames[0]
+        for frame in frames[1:]:
+            merged = merged.merge(frame, on="date", how="outer")
+        merged = merged.sort_values("date").drop_duplicates("date")
 
         for col in ["vndusd", "sbv_rate", "cpi_mom"]:
-            if col in merged.columns:
-                # Never backfill a missing early observation from the future.
-                merged[col] = merged[col].ffill()
+            if col not in merged.columns:
+                merged[col] = pd.NA
+            # Forward-fill only observations already released.  There is no
+            # backfill from a later macro release into an earlier row.
+            merged[col] = merged[col].ffill()
 
         log.info("Macro features assembled: %d rows", len(merged))
         return merged
@@ -91,7 +87,9 @@ def add_macro_features(df: pd.DataFrame) -> pd.DataFrame:
 
     # Always expose the complete macro schema.  Fill only from earlier
     # observations within the same ticker; a global bfill would copy future
-    # macro values into historical rows and across ticker boundaries.
+    # macro values into historical rows and across ticker boundaries.  Zero is
+    # reserved for the explicit unavailable-data fallback, not a synthetic
+    # observation.
     for col in ["vndusd", "sbv_rate", "cpi_mom"]:
         if col not in result.columns:
             result[col] = 0.0

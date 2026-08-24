@@ -44,6 +44,7 @@ class OutperformanceLabel:
 
         label_col = f"outperform_{horizon}d"
         excess_col = f"excess_return_{horizon}d"
+        label_end_col = f"label_end_date_{horizon}d"
         valid = merged[["close", "bm_close", "stock_future", "bm_future"]].notna().all(axis=1)
         valid &= merged["close"].ne(0) & merged["bm_close"].ne(0)
 
@@ -51,11 +52,15 @@ class OutperformanceLabel:
         merged.loc[valid, label_col] = (merged.loc[valid, "stock_ret"] > merged.loc[valid, "bm_ret"]).astype(float)
         merged[f"excess_return_{horizon}d"] = merged["stock_ret"] - merged["bm_ret"]
         merged.loc[~valid, excess_col] = np.nan
+        # A label is not available until its future stock session has closed.
+        # Keep this endpoint so time-based splits can purge labels that would
+        # still be using prices from the test period.
+        merged[label_end_col] = merged["future_date"]
 
         result = stock_df.copy()
         result["date"] = pd.to_datetime(result["date"], errors="coerce").dt.normalize()
         result = result.merge(
-            merged[["date", "ticker", label_col, excess_col]],
+            merged[["date", "ticker", label_col, excess_col, label_end_col]],
             on=["date", "ticker"],
             how="left",
         )

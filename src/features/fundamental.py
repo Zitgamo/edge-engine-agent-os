@@ -7,6 +7,8 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 
+from src.time_utils import today_vn
+
 log = logging.getLogger(__name__)
 
 FUNDA_KEYS = [
@@ -45,39 +47,47 @@ class FundamentalFeatures:
             self._cache[ticker] = result
             return result
 
-    def compute_ticker_features(self, ticker: str) -> dict[str, float]:
+    def compute_ticker_features(self, ticker: str) -> dict[str, float | None]:
         info = self.fetch_info(ticker)
-        features: dict[str, float] = {}
+        # Missing values stay missing.  Neutral constants would create a fake
+        # cross-section and make a failed data fetch look like valid alpha.
+        features: dict[str, float | None] = {
+            column: None for column in FUNDA_FEATURE_COLS
+        }
 
         pe = info.get("trailingPE")
-        features["pe_ratio"] = pe if pe and 0 < pe < 200 else 15.0
+        features["pe_ratio"] = pe if pe and 0 < pe < 200 else None
 
         pb = info.get("priceToBook")
-        features["pb_ratio"] = pb if pb and pb > 0 else 2.0
+        features["pb_ratio"] = pb if pb and pb > 0 else None
 
         roe = info.get("returnOnEquity")
-        features["roe"] = roe if roe is not None else 0.12
+        features["roe"] = roe
 
         rg = info.get("revenueGrowth")
-        features["rev_growth"] = rg if rg is not None else 0.0
+        features["rev_growth"] = rg
 
         eg = info.get("earningsQuarterlyGrowth")
-        features["earn_growth"] = eg if eg is not None else 0.0
+        features["earn_growth"] = eg
 
         pm = info.get("profitMargins")
-        features["profit_margin"] = pm if pm is not None else 0.1
+        features["profit_margin"] = pm
 
         de = info.get("debtToEquity")
-        features["debt_equity"] = de if de is not None and de >= 0 else 1.0
+        features["debt_equity"] = de if de is not None and de >= 0 else None
 
         dy = info.get("dividendYield")
-        features["div_yield"] = dy if dy is not None else 0.0
+        features["div_yield"] = dy
 
         mc = info.get("marketCap")
-        features["log_mcap"] = np.log(mc) if mc and mc > 0 else 25.0
+        features["log_mcap"] = np.log(mc) if mc and mc > 0 else None
 
         fpe = info.get("forwardPE")
-        features["forward_pe"] = fpe if fpe and 0 < fpe < 200 else pe if pe and 0 < pe < 200 else 15.0
+        features["forward_pe"] = (
+            fpe if fpe and 0 < fpe < 200
+            else pe if pe and 0 < pe < 200
+            else None
+        )
 
         return features
 
@@ -168,18 +178,33 @@ class HistoricalFundamentalFeatures:
             funda = self.fetch_quarterly_fundamentals(t)
             if funda.empty:
                 continue
+            if "published_date" not in funda.columns:
+                log.warning(
+                    "Skipping historical fundamentals for %s: no publication/as-of date",
+                    t,
+                )
+                continue
             prices = price_data.get(t)
             if prices is None or prices.empty:
                 continue
-            # Merge fundamentals with price data by forward-filling quarterly values
+            # A fiscal period end is not the date the market learned the
+            # result.  Only a real publication/as-of date may be used for a
+            # historical merge.
             prices_dates = prices[["date", "close"]].copy()
             prices_dates["date"] = pd.to_datetime(prices_dates["date"])
-            funda["date"] = pd.to_datetime(funda["date"])
+            funda["published_date"] = pd.to_datetime(
+                funda["published_date"], errors="coerce"
+            )
+            funda = funda.dropna(subset=["published_date"])
+            if funda.empty:
+                continue
 
             merged = pd.merge_asof(
                 prices_dates.sort_values("date"),
-                funda.sort_values("date"),
-                on="date", direction="backward",
+                funda.sort_values("published_date"),
+                left_on="date",
+                right_on="published_date",
+                direction="backward",
             )
 
             # Compute PE and PB
@@ -233,14 +258,29 @@ def add_fundamental_features(df: pd.DataFrame, latest_only: bool = True) -> pd.D
     latest market date, where the standalone value strategies use it; the ML
     model does not include these columns at all.
     """
+    if not latest_only:
+        raise ValueError(
+            "Current fundamental snapshots cannot be applied to historical rows; "
+            "use HistoricalFundamentalFeatures with published_date instead"
+        )
+
     ff = FundamentalFeatures()
     tickers = df["ticker"].unique()
-    funda_map: dict[str, dict[str, float]] = {}
+    funda_map: dict[str, dict[str, float | None]] = {}
     for t in tickers:
         funda_map[t] = ff.compute_ticker_features(t)
 
     result = df.copy()
     latest_date = result["date"].max() if latest_only else None
+    result["fundamental_snapshot_date"] = pd.NaT
+    if latest_only and pd.notna(latest_date):
+        # This is retrieval/as-of metadata, not a claim about the fiscal
+        # period.  The strategy must not use a snapshot retrieved after the
+        # signal date, which keeps lagged runs fail-closed.
+        result.loc[
+            result["date"] == latest_date,
+            "fundamental_snapshot_date",
+        ] = pd.Timestamp(today_vn())
     for col in FUNDA_FEATURE_COLS:
         result[col] = result["ticker"].map(
             {ticker: values.get(col, np.nan) for ticker, values in funda_map.items()}

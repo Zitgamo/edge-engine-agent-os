@@ -43,6 +43,7 @@ class SupabaseClient:
     def __init__(self, cfg: SupabaseConfig) -> None:
         self.cfg = cfg
         self.base = f"{cfg.url.rstrip('/')}/rest/v1"
+        self._remote_column_cache: dict[tuple[str, str], bool] = {}
 
     def _headers(self, use_service: bool = False) -> dict[str, str]:
         key = self.cfg.service_key if use_service else self.cfg.anon_key
@@ -54,6 +55,31 @@ class SupabaseClient:
             "Content-Type": "application/json",
             "Accept": "application/json",
         }
+
+    def _remote_column_available(self, table: str, column: str) -> bool:
+        """Check and cache whether an optional migration column exists."""
+        key = (table, column)
+        if key in self._remote_column_cache:
+            return self._remote_column_cache[key]
+        try:
+            resp = requests.get(
+                f"{self.base}/{table}",
+                headers=self._headers(use_service=True),
+                params={"select": column, "limit": "1"},
+                timeout=15,
+            )
+        except requests.RequestException:
+            available = False
+        else:
+            available = resp.status_code == 200
+        self._remote_column_cache[key] = available
+        if not available:
+            log.warning(
+                "Supabase %s.%s is unavailable; using legacy schema until supabase_setup.sql is applied",
+                table,
+                column,
+            )
+        return available
 
     def _upsert(self, table: str, rows: list[dict], on_conflict: str | None = None) -> int:
         if not rows:
@@ -122,7 +148,8 @@ class SupabaseClient:
         return True
 
     def sync_signals(self) -> int:
-        from src.database import get_conn
+        from src.database import get_conn, init_db
+        init_db()
         conn = get_conn()
         rows = conn.execute(
             "SELECT signal_date, ticker, rank, score, ensemble_score, stop_loss, take_profit, model_version, created_at "
@@ -153,26 +180,60 @@ class SupabaseClient:
         return self._upsert("signals", data, on_conflict="signal_date,ticker")
 
     def sync_actuals(self) -> int:
-        from src.database import get_conn
+        from src.database import get_conn, init_db
+        init_db()
         conn = get_conn()
         rows = conn.execute(
-            "SELECT signal_date, ticker, actual_excess_return_5d, actual_outperform, realized_date, updated_at "
+            "SELECT signal_date, ticker, actual_excess_return_5d, actual_excess_return_20d, "
+            "actual_stock_return, benchmark_return, gross_stock_return, transaction_cost, "
+            "actual_outperform, realized_date, entry_date, entry_price, exit_price, "
+            "execution_status, updated_at "
             "FROM actuals ORDER BY id"
         ).fetchall()
         conn.close()
         if not rows:
             return 0
-        data = [
-            {
+        has_execution_schema = self._remote_column_available(
+            "actuals", "actual_excess_return_20d"
+        )
+        optional_columns = {
+            column: self._remote_column_available("actuals", column)
+            for column in (
+                "actual_stock_return",
+                "benchmark_return",
+                "gross_stock_return",
+                "transaction_cost",
+            )
+        }
+        data = []
+        for r in rows:
+            row = {
                 "signal_date": str(r[0]),
                 "ticker": r[1],
                 "actual_excess_return_5d": float(r[2]) if r[2] is not None else None,
-                "actual_outperform": int(r[3]) if r[3] is not None else None,
-                "realized_date": str(r[4]),
-                "updated_at": str(r[5]) if r[5] else None,
+                "actual_outperform": int(r[8]) if r[8] is not None else None,
+                "realized_date": str(r[9]),
+                "updated_at": str(r[14]) if r[14] else None,
             }
-            for r in rows
-        ]
+            if has_execution_schema:
+                row.update({
+                    "actual_excess_return_20d": float(r[3]) if r[3] is not None else None,
+                    "entry_date": str(r[10]) if r[10] else None,
+                    "entry_price": float(r[11]) if r[11] is not None else None,
+                    "exit_price": float(r[12]) if r[12] is not None else None,
+                    "execution_status": r[13],
+                })
+            optional_values = {
+                "actual_stock_return": r[4],
+                "benchmark_return": r[5],
+                "gross_stock_return": r[6],
+                "transaction_cost": r[7],
+            }
+            for column, available in optional_columns.items():
+                if available:
+                    value = optional_values[column]
+                    row[column] = float(value) if value is not None else None
+            data.append(row)
         return self._upsert("actuals", data, on_conflict="signal_date,ticker")
 
     def backfill_remote_actuals(self, holding_period: int = 20) -> int:
@@ -210,28 +271,56 @@ class SupabaseClient:
         calculated = calculate_actuals(pending, holding_period=holding_period)
         if calculated.empty:
             return 0
-        rows = [
-            {
+        has_execution_schema = self._remote_column_available(
+            "actuals", "actual_excess_return_20d"
+        )
+        rows = []
+        for row in calculated.to_dict("records"):
+            payload = {
                 "signal_date": str(row["signal_date"]),
                 "ticker": row["ticker"],
                 "actual_excess_return_5d": float(row["actual_excess_return_5d"]),
                 "actual_outperform": int(row["actual_outperform"]),
                 "realized_date": str(row["realized_date"]),
             }
-            for row in calculated.to_dict("records")
-        ]
+            if has_execution_schema:
+                payload.update({
+                    "actual_excess_return_20d": float(
+                        row.get(
+                            f"actual_excess_return_{holding_period}d",
+                            row.get("actual_excess_return", row["actual_excess_return_5d"]),
+                        )
+                    ),
+                    "entry_date": str(row.get("entry_date")) if row.get("entry_date") else None,
+                    "entry_price": float(row["entry_price"]) if row.get("entry_price") is not None else None,
+                    "exit_price": float(row["exit_price"]) if row.get("exit_price") is not None else None,
+                    "execution_status": row.get("status"),
+                })
+            for column in (
+                "actual_stock_return",
+                "benchmark_return",
+                "gross_stock_return",
+                "transaction_cost",
+            ):
+                if self._remote_column_available("actuals", column):
+                    value = row.get(column)
+                    payload[column] = float(value) if value is not None else None
+            rows.append(payload)
         return self._upsert("actuals", rows, on_conflict="signal_date,ticker")
 
     def sync_pipeline_runs(self) -> int:
-        from src.database import get_conn
+        from src.database import get_conn, init_db
+        init_db()
         conn = get_conn()
         rows = conn.execute(
-            "SELECT run_date, accuracy, precision, recall, f1, roc_auc, status "
+            "SELECT run_date, accuracy, precision, recall, f1, roc_auc, status, run_key "
             "FROM pipeline_runs ORDER BY id DESC LIMIT 1"
         ).fetchall()
         conn.close()
         if not rows:
             return 0
+        has_run_key = self._remote_column_available("pipeline_runs", "run_key")
+        run_key = str(rows[0][7]) if rows[0][7] else str(rows[0][0])[:10]
         data = [
             {
                 "run_date": str(r[0]) if r[0] else None,
@@ -241,37 +330,53 @@ class SupabaseClient:
                 "f1": float(r[4]) if r[4] is not None else None,
                 "roc_auc": float(r[5]) if r[5] is not None else None,
                 "status": r[6],
+                **({"run_key": run_key} if has_run_key and run_key else {}),
             }
             for r in rows
         ]
-        return self._upsert("pipeline_runs", data)
+        return self._upsert(
+            "pipeline_runs",
+            data,
+            on_conflict="run_key" if has_run_key else None,
+        )
 
     def sync_strategy_performance(self) -> int:
-        from src.database import get_conn
+        from src.database import get_conn, init_db
+        init_db()
         conn = get_conn()
         rows = conn.execute(
-            "SELECT strategy_name, signal_date, ticker, rank, score, actual_excess_return_5d, actual_outperform, realized "
+            "SELECT strategy_name, signal_date, ticker, rank, score, actual_excess_return_5d, "
+            "actual_excess_return_20d, actual_outperform, realized "
             "FROM strategy_performance ORDER BY id"
         ).fetchall()
         conn.close()
         if not rows:
             return 0
-        data = [
-            {
+        has_execution_schema = self._remote_column_available(
+            "strategy_performance", "actual_excess_return_20d"
+        )
+        data = []
+        for r in rows:
+            payload = {
                 "strategy_name": r[0],
                 "signal_date": str(r[1]),
                 "ticker": r[2],
                 "rank": int(r[3]) if r[3] is not None else None,
                 "score": float(r[4]) if r[4] is not None else None,
                 "actual_excess_return_5d": float(r[5]) if r[5] is not None else None,
-                "actual_outperform": int(r[6]) if r[6] is not None else None,
-                "realized": int(r[7]) if r[7] is not None else 0,
+                "actual_outperform": int(r[7]) if r[7] is not None else None,
+                "realized": int(r[8]) if r[8] is not None else 0,
             }
-            for r in rows
-        ]
+            if has_execution_schema:
+                payload["actual_excess_return_20d"] = (
+                    float(r[6]) if r[6] is not None else None
+                )
+            data.append(payload)
         return self._upsert("strategy_performance", data, on_conflict="strategy_name,signal_date,ticker")
 
     def sync_all(self) -> dict[str, int]:
+        from src.database import init_db
+        init_db()
         if not self.init_tables():
             raise RuntimeError(
                 "Supabase schema is unavailable; run supabase_setup.sql in the Supabase SQL Editor"
@@ -323,10 +428,20 @@ class SupabaseClient:
             if key in actual_map:
                 a = actual_map[key]
                 s["actual_excess_return_5d"] = a.get("actual_excess_return_5d")
+                s["actual_excess_return_20d"] = a.get("actual_excess_return_20d")
+                s["actual_stock_return"] = a.get("actual_stock_return")
+                s["benchmark_return"] = a.get("benchmark_return")
+                s["gross_stock_return"] = a.get("gross_stock_return")
+                s["transaction_cost"] = a.get("transaction_cost")
                 s["actual_outperform"] = a.get("actual_outperform")
                 s["realized_date"] = a.get("realized_date")
             else:
                 s["actual_excess_return_5d"] = None
+                s["actual_excess_return_20d"] = None
+                s["actual_stock_return"] = None
+                s["benchmark_return"] = None
+                s["gross_stock_return"] = None
+                s["transaction_cost"] = None
                 s["actual_outperform"] = None
                 s["realized_date"] = None
         return signals
@@ -338,6 +453,34 @@ class SupabaseClient:
             "limit": str(limit),
         })
 
+    def get_strategy_performance(self, limit: int = 5000) -> list[dict[str, Any]]:
+        """Read persisted strategy outcomes for cloud runners and dashboards.
+
+        The first query uses the canonical executable T+20 column.  The
+        fallback keeps older Supabase projects readable until the one-time
+        migration has been applied; legacy ``actual_excess_return_5d`` rows
+        are already treated as executable outcomes by the local migration.
+        """
+        params = {
+            "select": (
+                "strategy_name,signal_date,ticker,rank,score,"
+                "actual_excess_return_5d,actual_excess_return_20d,"
+                "actual_outperform,realized"
+            ),
+            "order": "signal_date.asc,strategy_name.asc,rank.asc",
+            "limit": str(limit),
+        }
+        rows = self._query("strategy_performance", params)
+        if rows:
+            return rows
+        return self._query("strategy_performance", {
+            **params,
+            "select": (
+                "strategy_name,signal_date,ticker,rank,score,"
+                "actual_excess_return_5d,actual_outperform,realized"
+            ),
+        })
+
     def get_pipeline_summary(self) -> list[dict[str, Any]]:
         return self._query("pipeline_runs", {
             "select": "*",
@@ -347,19 +490,30 @@ class SupabaseClient:
 
     def get_performance_summary(self) -> list[dict[str, Any]]:
         actuals = self._query("actuals", {
-            "select": "signal_date,ticker,actual_excess_return_5d,actual_outperform",
+            "select": "signal_date,ticker,actual_excess_return_5d,actual_excess_return_20d,"
+                       "actual_stock_return,benchmark_return,actual_outperform",
             "order": "signal_date.desc",
             "limit": "500",
         })
         if not actuals:
+            actuals = self._query("actuals", {
+                "select": "signal_date,ticker,actual_excess_return_5d,actual_outperform",
+                "order": "signal_date.desc",
+                "limit": "500",
+            })
+        if not actuals:
             return []
 
         df = pd.DataFrame(actuals)
-        df["actual_excess_return_5d"] = pd.to_numeric(
-            df["actual_excess_return_5d"], errors="coerce"
+        legacy = pd.to_numeric(
+            df.get("actual_excess_return_5d", pd.Series(index=df.index)), errors="coerce"
         )
+        executable = pd.to_numeric(
+            df.get("actual_excess_return_20d", pd.Series(index=df.index)), errors="coerce"
+        )
+        df["execution_excess_return"] = executable.combine_first(legacy)
         df["actual_outperform"] = pd.to_numeric(df["actual_outperform"], errors="coerce")
-        df = df.dropna(subset=["actual_excess_return_5d", "actual_outperform"])
+        df = df.dropna(subset=["execution_excess_return", "actual_outperform"])
         if df.empty:
             return []
         summary = (
@@ -367,12 +521,23 @@ class SupabaseClient:
             .agg(
                 total_picks=("ticker", "count"),
                 wins=("actual_outperform", "sum"),
-                avg_excess_return=("actual_excess_return_5d", "mean"),
-                total_excess_return=("actual_excess_return_5d", "sum"),
+                avg_excess_return=("execution_excess_return", "mean"),
+                total_excess_return=("execution_excess_return", "sum"),
             )
             .sort_values("signal_date", ascending=False)
         )
         summary["win_rate"] = summary["wins"] / summary["total_picks"]
+        if "actual_stock_return" in df.columns:
+            df["actual_stock_return"] = pd.to_numeric(
+                df["actual_stock_return"], errors="coerce"
+            )
+            absolute = df.dropna(subset=["actual_stock_return"])
+            if not absolute.empty:
+                absolute_summary = (
+                    absolute.groupby("signal_date", as_index=False)
+                    .agg(avg_stock_return=("actual_stock_return", "mean"))
+                )
+                summary = summary.merge(absolute_summary, on="signal_date", how="left")
         return summary.where(pd.notna(summary), None).to_dict(orient="records")
 
 

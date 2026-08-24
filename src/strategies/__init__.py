@@ -9,5 +9,13 @@ from src.strategies.breakout import BreakoutStrategy
 from src.strategies.rsi import RSIStrategy
 from src.strategies.defensive import DefensiveStrategy
 from src.strategies.accumulation import AccumulationStrategy
+from src.strategies.trend_following import TrendFollowingStrategy
+from src.strategies.breakout_volatility import BreakoutVolatilityStrategy
 
-__all__ = ["Strategy", "StrategyManager", "AccumulationStrategy"]
+__all__ = [
+    "Strategy",
+    "StrategyManager",
+    "AccumulationStrategy",
+    "TrendFollowingStrategy",
+    "BreakoutVolatilityStrategy",
+]
