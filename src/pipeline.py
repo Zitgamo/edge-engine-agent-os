@@ -22,6 +22,7 @@ from src.features.volume import VolumeSurge
 from src.labels.execution import add_execution_labels
 from src.labels.outperformance import OutperformanceLabel
 from src.logging_setup import setup_logging
+from src.model.blend import blend_horizon_scores
 from src.model.evaluator import ModelEvaluator
 from src.model.schema import (
     ENSEMBLE_HORIZONS as _ENSEMBLE_HORIZONS,
@@ -39,7 +40,6 @@ from src.model.schema import (
 )
 from src.model.splits import purged_recent_train_window, recent_date_window
 from src.model.targets import target_spec
-from src.model.blend import blend_horizon_scores
 from src.model.trainer import ModelTrainer  # noqa: F401  (kept for backwards compat)
 from src.ranking.signal import SignalGenerator
 from src.time_utils import now_vn, today_vn
@@ -53,6 +53,38 @@ N_PICKS = _N_PICKS
 HOLDING_PERIOD = _HOLDING_PERIOD
 STOP_LOSS = -0.03
 TAKE_PROFIT = 0.08
+
+
+def _publish_no_trade(
+    storage: PriceStorage,
+    signal_date: str,
+    metrics: dict[str, float],
+    *,
+    status: str,
+    config: Config | None = None,
+) -> None:
+    """Publish an explicit no-trade state without retaining stale picks."""
+    save_pipeline_run(metrics, status=status, run_key=signal_date)
+
+    # Clear the complete local publication before backfilling older dates.
+    # Otherwise sync_actuals() could upload actuals for signals that the
+    # no-trade result just removed.
+    from src.database import backfill_actuals, clear_publication_for_date
+
+    clear_publication_for_date(signal_date)
+    storage.save_processed(pd.DataFrame(), "ranking.parquet")
+    storage.save_processed(pd.DataFrame(), "signal.parquet")
+    backfill_actuals(holding_period=HOLDING_PERIOD, config=config)
+
+    from src.supabase_client import (
+        clear_publication_for_date as clear_cloud_publication_for_date,
+    )
+    from src.supabase_client import (
+        sync_all,
+    )
+
+    clear_cloud_publication_for_date(signal_date)
+    sync_all(config=config)
 
 
 def _closed_market_sessions(
@@ -489,16 +521,13 @@ def run_pipeline(
             # result so scheduled workflows remain observable and idempotent.
             latest_market_date = pd.Timestamp(latest_benchmark_date).date()
             log.error("Model quality gate blocked publication: %s", exc)
-            save_pipeline_run(
+            _publish_no_trade(
+                storage,
+                latest_market_date.isoformat(),
                 metrics,
                 status="quality_failed",
-                run_key=latest_market_date.isoformat(),
+                config=config,
             )
-            storage.save_processed(pd.DataFrame(), "ranking.parquet")
-            from src.database import backfill_actuals
-            backfill_actuals(holding_period=HOLDING_PERIOD)
-            from src.supabase_client import sync_all
-            sync_all()
             log.warning("No trade published because the execution quality gate failed")
             return
 
@@ -516,7 +545,9 @@ def run_pipeline(
         model = xgb.XGBClassifier(**XGBOOST_PARAMS)
         model.fit(X_full, y_full, verbose=False)
         ensemble_models[h] = model
-        model.save_model(f"models/xgboost_model_h{h}.json")
+        model_path = config.model_path_for_horizon(h)
+        model_path.parent.mkdir(parents=True, exist_ok=True)
+        model.save_model(str(model_path))
         log.info("Retrained T+%d on full %d samples", h, len(X_full))
 
     log.info("=== Generating ensemble scores ===")
@@ -550,17 +581,14 @@ def run_pipeline(
     if ranking.empty:
         latest_market_date = pd.Timestamp(df_all["date"].max()).date()
         report_metrics = all_metrics.get(f"T+{HOLDING_PERIOD}") or all_metrics.get("T+5", {})
-        save_pipeline_run(
+        _publish_no_trade(
+            storage,
+            latest_market_date.isoformat(),
             report_metrics,
             status="no_trade",
-            run_key=latest_market_date.isoformat(),
+            config=config,
         )
-        storage.save_processed(ranking, "ranking.parquet")
         log.warning("No eligible ranking passed entry gates; publishing no trade")
-        from src.database import backfill_actuals
-        backfill_actuals(holding_period=HOLDING_PERIOD)
-        from src.supabase_client import sync_all
-        sync_all()
         return
     storage.save_processed(ranking, "ranking.parquet")
 
@@ -579,7 +607,7 @@ def run_pipeline(
         )
 
     sm.save_signals(rankings, n=N_PICKS, signal_date=latest_market_date.isoformat())
-    sm.backfill_strategy_actuals()
+    sm.backfill_strategy_actuals(config=config)
 
     signal = SignalGenerator().pick_top_n(
         ranking, n=N_PICKS,
@@ -615,12 +643,15 @@ def run_pipeline(
     save_pipeline_run(report_metrics, run_key=latest_market_date.isoformat())
     log.info("=== Backfilling actuals (T+%d) ===", HOLDING_PERIOD)
     from src.database import backfill_actuals
-    bf_count = backfill_actuals(holding_period=HOLDING_PERIOD)
+    bf_count = backfill_actuals(
+        holding_period=HOLDING_PERIOD,
+        config=config,
+    )
     log.info("Backfilled %d actuals", bf_count)
 
     log.info("=== Syncing to cloud (Supabase) ===")
     from src.supabase_client import sync_all
-    sync_all()
+    sync_all(config=config)
 
     log.info("=== Pipeline complete ===")
 

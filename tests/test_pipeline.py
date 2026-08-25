@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src import pipeline
+from src import database, pipeline, supabase_client
 from src.model.schema import FEATURE_COLS
 from src.pipeline import (
     _enforce_execution_horizon_quality,
@@ -181,3 +181,61 @@ def test_execution_quality_metrics_use_next_open_trade_results(monkeypatch) -> N
     assert metrics["execution_evaluation_dates"] == 2
     assert metrics["execution_top3_excess_return"] == pytest.approx(0.025)
     assert metrics["execution_top3_spread"] == pytest.approx(1 / 60)
+
+
+def test_publish_no_trade_clears_local_and_cloud_publications(monkeypatch) -> None:
+    events = []
+
+    class FakeStorage:
+        def save_processed(self, frame: pd.DataFrame, filename: str):
+            events.append(("processed", filename, frame.empty))
+
+    monkeypatch.setattr(
+        pipeline,
+        "save_pipeline_run",
+        lambda metrics, status, run_key: events.append(
+            ("run", metrics, status, run_key)
+        ),
+    )
+    monkeypatch.setattr(
+        database,
+        "clear_publication_for_date",
+        lambda signal_date: events.append(("local_clear", signal_date)),
+    )
+    monkeypatch.setattr(
+        database,
+        "backfill_actuals",
+        lambda holding_period, config=None: events.append(
+            ("backfill", holding_period, config)
+        ),
+    )
+    monkeypatch.setattr(
+        supabase_client,
+        "clear_publication_for_date",
+        lambda signal_date: events.append(("cloud_clear", signal_date)),
+    )
+    monkeypatch.setattr(
+        supabase_client,
+        "sync_all",
+        lambda config=None: events.append(("sync", config)),
+    )
+
+    pipeline._publish_no_trade(
+        FakeStorage(),
+        "2026-08-18",
+        {"roc_auc": 0.51},
+        status="no_trade",
+    )
+
+    assert ("local_clear", "2026-08-18") in events
+    assert ("cloud_clear", "2026-08-18") in events
+    assert any(
+        event[0] == "backfill" and event[1] == pipeline.HOLDING_PERIOD
+        for event in events
+    )
+    assert any(event[0] == "sync" for event in events)
+    assert {item[1] for item in events if item[0] == "processed"} == {
+        "ranking.parquet",
+        "signal.parquet",
+    }
+    assert all(item[2] for item in events if item[0] == "processed")

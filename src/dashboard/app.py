@@ -14,7 +14,6 @@ import pandas as pd
 import streamlit as st
 
 from src.dashboard.style import CUSTOM_CSS
-from src.config import Config
 from src.time_utils import today_vn
 
 st.set_page_config(
@@ -40,7 +39,7 @@ def load_overview():
             perf = pd.DataFrame(perf_raw) if perf_raw else pd.DataFrame()
             run_count = len(runs_raw) if runs_raw else 0
         else:
-            from src.database import get_signals, get_performance_summary
+            from src.database import get_performance_summary, get_signals
             sigs = get_signals(limit=200)
             perf = get_performance_summary()
             from src.database import get_conn
@@ -249,11 +248,10 @@ with tab_leaderboard:
     st.dataframe(df_strats, width="stretch", hide_index=True)
 
     try:
-        from src.research.strategy_attribution import load_realized_strategy_attribution
         from src.research.paper_test import load_paper_test_readiness
+        from src.research.strategy_attribution import load_realized_strategy_attribution
 
         attribution = load_realized_strategy_attribution(
-            round_trip_cost=Config().round_trip_cost,
             prefer_cloud=True,
         )
         if not attribution.empty:

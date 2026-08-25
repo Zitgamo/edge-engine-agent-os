@@ -19,6 +19,131 @@ def _configure_console_encoding() -> None:
             continue
 
 
+def _merge_history_frames(
+    local: pd.DataFrame,
+    cloud: pd.DataFrame,
+    *,
+    key_columns: tuple[str, ...],
+    limit: int,
+) -> pd.DataFrame:
+    """Merge local and cloud history without losing older cloud-only rows."""
+    frames: list[pd.DataFrame] = []
+    for source_priority, frame in ((1, local), (0, cloud)):
+        if frame is None or frame.empty or any(
+            column not in frame.columns for column in key_columns
+        ):
+            continue
+        current = frame.copy()
+        if "signal_date" in current.columns:
+            current["signal_date"] = pd.to_datetime(
+                current["signal_date"], errors="coerce"
+            ).dt.strftime("%Y-%m-%d")
+        if "ticker" in current.columns:
+            current["ticker"] = current["ticker"].astype(str)
+        current["__source_priority"] = source_priority
+        realized_columns = [
+            column
+            for column in (
+                "execution_excess_return",
+                "actual_excess_return_20d",
+                "actual_excess_return",
+                "actual_excess_return_5d",
+                "actual_outperform",
+            )
+            if column in current.columns
+        ]
+        current["__completeness"] = (
+            current[realized_columns].notna().sum(axis=1)
+            if realized_columns
+            else 0
+        )
+        frames.append(current)
+
+    if not frames:
+        return pd.DataFrame()
+
+    combined = pd.concat(frames, ignore_index=True, sort=False)
+    combined = combined.sort_values(
+        ["__completeness", "__source_priority"],
+        ascending=[False, False],
+        kind="stable",
+    )
+    combined = combined.drop_duplicates(list(key_columns), keep="first")
+    sort_columns = [column for column in ("signal_date", "rank") if column in combined.columns]
+    if sort_columns:
+        if "rank" in combined.columns:
+            combined["rank"] = pd.to_numeric(combined["rank"], errors="coerce")
+        combined = combined.sort_values(
+            sort_columns,
+            ascending=[False, True][: len(sort_columns)],
+            kind="stable",
+        )
+    return combined.drop(columns=["__source_priority", "__completeness"], errors="ignore").head(limit)
+
+
+def _load_signal_history(limit: int) -> pd.DataFrame:
+    """Load the union of local and Supabase signals for CLI history views."""
+    from src.database import get_signals
+
+    local = get_signals(limit=limit)
+    cloud = pd.DataFrame()
+    try:
+        from src.supabase_client import get_client
+
+        client = get_client()
+        if client is not None:
+            cloud = pd.DataFrame(client.get_signals(limit=limit))
+    except Exception as exc:  # pragma: no cover - network/config dependent
+        log.warning("Could not load signal history from Supabase: %s", exc)
+    return _merge_history_frames(
+        local,
+        cloud,
+        key_columns=("signal_date", "ticker"),
+        limit=limit,
+    )
+
+
+def _load_actual_history(limit: int = 500) -> pd.DataFrame:
+    """Load the union of local and cloud actuals for CLI summaries."""
+    from src.database import get_conn, init_db
+
+    init_db()
+    conn = get_conn()
+    local = pd.read_sql_query(
+        """SELECT a.signal_date, a.ticker,
+                  COALESCE(a.actual_excess_return_20d, a.actual_excess_return_5d)
+                  AS execution_excess_return,
+                  a.actual_excess_return_5d, a.actual_excess_return_20d,
+                  a.actual_stock_return, a.benchmark_return,
+                  a.actual_outperform,
+                  s.score, s.ensemble_score, s.rank
+           FROM actuals a
+           LEFT JOIN signals s ON a.signal_date = s.signal_date AND a.ticker = s.ticker
+           ORDER BY a.signal_date DESC
+           LIMIT ?""",
+        conn,
+        params=(limit,),
+    )
+    conn.close()
+
+    cloud = pd.DataFrame()
+    try:
+        from src.supabase_client import get_client
+
+        client = get_client()
+        if client is not None:
+            cloud = pd.DataFrame(client.get_actuals(limit=limit))
+    except Exception as exc:  # pragma: no cover - network/config dependent
+        log.warning("Could not load performance history from Supabase: %s", exc)
+
+    return _merge_history_frames(
+        local,
+        cloud,
+        key_columns=("signal_date", "ticker"),
+        limit=limit,
+    )
+
+
 def main() -> None:
     _configure_console_encoding()
     if len(sys.argv) < 2:
@@ -67,7 +192,7 @@ def main() -> None:
     elif cmd == "strategy-attribution":
         from src.research.strategy_attribution import load_realized_strategy_attribution
 
-        attribution = load_realized_strategy_attribution(round_trip_cost=0.0)
+        attribution = load_realized_strategy_attribution(prefer_cloud=True)
         if attribution.empty:
             print("No realized strategy trades yet.")
         else:
@@ -78,7 +203,7 @@ def main() -> None:
         from src.research.paper_test import load_paper_test_readiness
 
         config = Config()
-        report = load_paper_test_readiness()
+        report = load_paper_test_readiness(prefer_cloud=True)
         print(
             f"Paper-test cost={config.round_trip_cost:.2%}; "
             "a basket requires 3 executable picks; minimum=30, target=50 baskets"
@@ -89,33 +214,7 @@ def main() -> None:
             print(report.to_string(index=False))
 
     elif cmd == "summary":
-        from src.database import get_conn, init_db
-        init_db()
-        conn = get_conn()
-        actuals = pd.read_sql_query(
-            """SELECT a.signal_date, a.ticker,
-                      COALESCE(a.actual_excess_return_20d, a.actual_excess_return_5d)
-                      AS execution_excess_return,
-                      a.actual_stock_return, a.benchmark_return,
-                      a.actual_outperform,
-                      s.score, s.ensemble_score, s.rank
-               FROM actuals a
-               LEFT JOIN signals s ON a.signal_date = s.signal_date AND a.ticker = s.ticker
-               ORDER BY a.signal_date DESC""",
-            conn,
-        )
-        conn.close()
-        if actuals.empty:
-            # GitHub Actions starts with a fresh SQLite file on every run.
-            # Fall back to the cloud copy so a retry can still display history.
-            try:
-                from src.supabase_client import get_client
-
-                client = get_client()
-                if client is not None:
-                    actuals = pd.DataFrame(client.get_actuals(limit=500))
-            except Exception as exc:  # pragma: no cover - network/config dependent
-                log.warning("Could not load performance history from Supabase: %s", exc)
+        actuals = _load_actual_history()
         if actuals.empty:
             print("No performance data yet. Run 'pipeline' first (backfill is automatic now).")
             return
@@ -170,19 +269,7 @@ def main() -> None:
         print()
 
     elif cmd == "signal":
-        from src.database import get_signals
-        df = get_signals(limit=10)
-        if df.empty:
-            # A fresh GitHub runner has no checked-in SQLite database. Read the
-            # published signal from Supabase before reporting that none exists.
-            try:
-                from src.supabase_client import get_client
-
-                client = get_client()
-                if client is not None:
-                    df = pd.DataFrame(client.get_signals(limit=10))
-            except Exception as exc:  # pragma: no cover - network/config dependent
-                log.warning("Could not load signals from Supabase: %s", exc)
+        df = _load_signal_history(limit=10)
         if df.empty:
             print("No signals yet. Run 'pipeline' first.")
         else:
@@ -192,8 +279,7 @@ def main() -> None:
         days = 30
         if len(sys.argv) > 2 and sys.argv[2].isdigit():
             days = int(sys.argv[2])
-        from src.database import get_signals
-        df = get_signals(limit=days * 10)
+        df = _load_signal_history(limit=days * 10)
         if df.empty:
             print("No history yet. Run 'pipeline' first.")
             return
@@ -278,7 +364,7 @@ def main() -> None:
         backtest_score_validation()
 
     elif cmd == "accumulation":
-        from src.accumulation import backtest_tich_san, backtest_multi, print_report
+        from src.accumulation import backtest_multi, backtest_tich_san, print_report
         if len(sys.argv) > 2 and sys.argv[2] == "all":
             df = backtest_multi(top_n=10)
             print("\nTop 10 by CAGR:")

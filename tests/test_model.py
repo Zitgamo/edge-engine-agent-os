@@ -4,8 +4,17 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from src.config import Config
 from src.model.evaluator import ModelEvaluator
 from src.model.trainer import FEATURE_COLS, TARGET_COL, ModelTrainer
+
+
+def test_model_path_override_is_used_for_primary_t20_model(tmp_path) -> None:
+    config = Config()
+    config.model_path = tmp_path / "custom" / "primary.json"
+
+    assert config.model_path_for_horizon(20) == tmp_path / "custom" / "primary.json"
+    assert config.model_path_for_horizon(5).as_posix() == "models/xgboost_model_h5.json"
 
 
 @pytest.fixture

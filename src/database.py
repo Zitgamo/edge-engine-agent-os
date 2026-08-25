@@ -4,12 +4,23 @@ import logging
 import sqlite3
 from datetime import date
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pandas as pd
 
 log = logging.getLogger(__name__)
 
+if TYPE_CHECKING:
+    from src.config import Config
+
 DB_PATH = Path("data/engine.db")
+EXECUTION_METRIC_COLUMNS = (
+    "execution_evaluation_dates",
+    "execution_top3_win_rate",
+    "execution_top3_excess_return",
+    "execution_universe_excess_return",
+    "execution_top3_spread",
+)
 
 
 def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
@@ -76,6 +87,11 @@ def init_db() -> None:
             recall REAL,
             f1 REAL,
             roc_auc REAL,
+            execution_evaluation_dates REAL,
+            execution_top3_win_rate REAL,
+            execution_top3_excess_return REAL,
+            execution_universe_excess_return REAL,
+            execution_top3_spread REAL,
             status TEXT
         );
 
@@ -116,6 +132,8 @@ def init_db() -> None:
     ]:
         _ensure_column(conn, "actuals", column, definition)
     _ensure_column(conn, "pipeline_runs", "run_key", "TEXT")
+    for column in EXECUTION_METRIC_COLUMNS:
+        _ensure_column(conn, "pipeline_runs", column, "REAL")
     _ensure_column(conn, "strategy_performance", "actual_excess_return_20d", "REAL")
     # The legacy column was populated with executable T+20 outcomes despite
     # its misleading T+5 name. Preserve those outcomes under the canonical
@@ -154,10 +172,19 @@ def save_signals(
     signals: pd.DataFrame,
     model_version: str = "xgboost_technical_v5_execution_primary",
 ) -> int:
+    init_db()
     conn = get_conn()
-    sig_date = signals["signal_date"].iloc[0] if "signal_date" in signals.columns else date.today().isoformat()
-    # Delete existing signals for same date to avoid duplicates
+    raw_sig_date = (
+        signals["signal_date"].iloc[0]
+        if "signal_date" in signals.columns
+        else date.today().isoformat()
+    )
+    sig_date = str(raw_sig_date)[:10]
+    # A rerun replaces the complete publication for this date.  Remove
+    # realized rows too, otherwise a later cloud sync can re-publish actuals
+    # belonging to tickers that are no longer in the replacement ranking.
     conn.execute("DELETE FROM signals WHERE signal_date = ?", (sig_date,))
+    conn.execute("DELETE FROM actuals WHERE signal_date = ?", (sig_date,))
     rows = []
     for _, row in signals.iterrows():
         rows.append((
@@ -181,6 +208,30 @@ def save_signals(
     return count
 
 
+def clear_publication_for_date(signal_date: str | date) -> dict[str, int]:
+    """Remove all publishable rows for a date before recording no-trade.
+
+    Signals, realized actuals and strategy rows share the same publication
+    date.  Clearing them together makes a forced rerun idempotent: an empty
+    ranking cannot leave yesterday's same-date rows visible locally or ready
+    to be uploaded again.
+    """
+    init_db()
+    date_key = str(signal_date)[:10]
+    conn = get_conn()
+    counts: dict[str, int] = {}
+    for table in ("signals", "actuals", "strategy_performance"):
+        cursor = conn.execute(
+            f"DELETE FROM {table} WHERE signal_date = ?",
+            (date_key,),
+        )
+        counts[table] = max(cursor.rowcount, 0)
+    conn.commit()
+    conn.close()
+    log.info("Cleared publication rows for %s: %s", date_key, counts)
+    return counts
+
+
 def save_pipeline_run(
     metrics: dict[str, float],
     status: str = "success",
@@ -191,14 +242,22 @@ def save_pipeline_run(
     conn = get_conn()
     cur = conn.execute(
         """INSERT INTO pipeline_runs
-             (run_key, accuracy, precision, recall, f1, roc_auc, status)
-           VALUES (?, ?, ?, ?, ?, ?, ?)
+             (run_key, accuracy, precision, recall, f1, roc_auc,
+              execution_evaluation_dates, execution_top3_win_rate,
+              execution_top3_excess_return, execution_universe_excess_return,
+              execution_top3_spread, status)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(run_key) DO UPDATE SET
              accuracy = excluded.accuracy,
              precision = excluded.precision,
              recall = excluded.recall,
              f1 = excluded.f1,
              roc_auc = excluded.roc_auc,
+             execution_evaluation_dates = excluded.execution_evaluation_dates,
+             execution_top3_win_rate = excluded.execution_top3_win_rate,
+             execution_top3_excess_return = excluded.execution_top3_excess_return,
+             execution_universe_excess_return = excluded.execution_universe_excess_return,
+             execution_top3_spread = excluded.execution_top3_spread,
              status = excluded.status,
              run_date = CURRENT_TIMESTAMP""",
         (
@@ -208,6 +267,7 @@ def save_pipeline_run(
             metrics.get("recall"),
             metrics.get("f1"),
             metrics.get("roc_auc"),
+            *(metrics.get(column) for column in EXECUTION_METRIC_COLUMNS),
             status,
         ),
     )
@@ -316,7 +376,10 @@ def update_actuals(df: pd.DataFrame) -> int:
     return count
 
 
-def backfill_actuals(holding_period: int = 20) -> int:
+def backfill_actuals(
+    holding_period: int = 20,
+    config: Config | None = None,
+) -> int:
     init_db()
     conn = get_conn()
     pending = pd.read_sql_query(
@@ -334,7 +397,11 @@ def backfill_actuals(holding_period: int = 20) -> int:
 
     from src.actuals import calculate_actuals
 
-    actuals = calculate_actuals(pending, holding_period=holding_period)
+    actuals = calculate_actuals(
+        pending,
+        holding_period=holding_period,
+        config=config,
+    )
     if actuals.empty:
         return 0
     update_actuals(actuals)

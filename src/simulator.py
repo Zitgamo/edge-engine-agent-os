@@ -7,7 +7,6 @@ import pandas as pd
 
 from src.config import Config
 from src.data.collector import OHLCVCollector
-from src.data.storage import PriceStorage
 from src.data.universe import filter_quality, get_ticker_universe
 from src.data.validator import DataValidator
 from src.features.returns import ReturnFeatures
@@ -25,7 +24,6 @@ HORIZONS = [1, 3, 5, 10, 15, 20, 30, 40, 60]
 def prepare_data() -> pd.DataFrame:
     config = Config()
     collector = OHLCVCollector(config)
-    storage = PriceStorage(config)
     validator = DataValidator()
     bm = collector.fetch("VNINDEX", days=365)
 

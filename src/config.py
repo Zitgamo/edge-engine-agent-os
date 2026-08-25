@@ -101,3 +101,15 @@ class Config:
         Path(self.processed_data_dir).mkdir(parents=True, exist_ok=True)
         Path(self.model_path).parent.mkdir(parents=True, exist_ok=True)
         Path(self.log_file).parent.mkdir(parents=True, exist_ok=True)
+
+    def model_path_for_horizon(self, horizon: int) -> Path:
+        """Return the persisted path for an ensemble horizon.
+
+        ``MODEL_PATH`` is the primary production model used by inference and
+        therefore owns the execution-aligned T+20 model.  Auxiliary horizon
+        models keep their conventional paths so an override cannot silently
+        be ignored for the model that inference actually loads.
+        """
+        if int(horizon) == 20:
+            return Path(self.model_path)
+        return Path("models") / f"xgboost_model_h{int(horizon)}.json"

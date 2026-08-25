@@ -10,6 +10,7 @@ import xgboost as xgb
 
 from src.config import Config
 from src.database import get_conn, init_db
+from src.model.blend import blend_horizon_scores
 from src.model.schema import FEATURE_COLS, TARGET_COL, XGBOOST_PARAMS
 from src.model.splits import (
     purged_recent_train_window,
@@ -19,7 +20,6 @@ from src.model.splits import (
     require_label_end_columns,
 )
 from src.model.targets import resolve_target_spec
-from src.model.blend import blend_horizon_scores
 
 log = logging.getLogger(__name__)
 
@@ -277,7 +277,9 @@ def train_ensemble_models() -> dict[int, xgb.XGBClassifier]:
         model = xgb.XGBClassifier(**XGBOOST_PARAMS)
         model.fit(X, y, verbose=False)
         models[h] = model
-        model.save_model(f"models/xgboost_model_h{h}.json")
+        model_path = config.model_path_for_horizon(h)
+        model_path.parent.mkdir(parents=True, exist_ok=True)
+        model.save_model(str(model_path))
         log.info("Trained ensemble model T+%d: %d samples", h, len(train))
     return models
 

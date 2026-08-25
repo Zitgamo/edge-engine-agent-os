@@ -3,12 +3,16 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
+from src.features.fundamental import (
+    FundamentalFeatures,
+    HistoricalFundamentalFeatures,
+    add_fundamental_features,
+)
+from src.features.macro import MacroFeatures, add_macro_features
 from src.features.returns import ReturnFeatures
 from src.features.rs import RelativeStrength
 from src.features.volatility import ATR
 from src.features.volume import VolumeSurge
-from src.features.fundamental import FundamentalFeatures, HistoricalFundamentalFeatures, add_fundamental_features
-from src.features.macro import MacroFeatures, add_macro_features
 
 
 @pytest.fixture

@@ -103,10 +103,35 @@ class SupabaseClient:
             return inserted
         raise RuntimeError(f"Supabase upsert {table} failed: {resp.status_code} {resp.text[:200]}")
 
+    def clear_publication_for_date(self, signal_date: str) -> dict[str, int]:
+        """Delete every publishable row for an explicit no-trade date."""
+        date_key = str(signal_date)[:10]
+        counts: dict[str, int] = {}
+        for table in ("signals", "actuals", "strategy_performance"):
+            try:
+                resp = requests.delete(
+                    f"{self.base}/{table}",
+                    headers=self._headers(use_service=True),
+                    params={"signal_date": f"eq.{date_key}"},
+                    timeout=15,
+                )
+            except requests.RequestException as exc:
+                raise RuntimeError(
+                    f"Supabase no-trade cleanup {table} request failed"
+                ) from exc
+            if resp.status_code not in (200, 204):
+                raise RuntimeError(
+                    f"Supabase no-trade cleanup {table} failed: "
+                    f"{resp.status_code} {resp.text[:200]}"
+                )
+            counts[table] = len(resp.json()) if resp.content else 0
+        log.info("Cleared cloud publication rows for %s: %s", date_key, counts)
+        return counts
+
     def _delete_stale_signal_rows(self, signal_date: str, tickers: list[str]) -> None:
         """Remove cloud rows for a date that the latest local ranking replaced."""
         ticker_filter = f"not.in.({','.join(tickers)})"
-        for table in ("signals", "actuals"):
+        for table in ("signals", "actuals", "strategy_performance"):
             try:
                 resp = requests.delete(
                     f"{self.base}/{table}",
@@ -236,7 +261,11 @@ class SupabaseClient:
             data.append(row)
         return self._upsert("actuals", data, on_conflict="signal_date,ticker")
 
-    def backfill_remote_actuals(self, holding_period: int = 20) -> int:
+    def backfill_remote_actuals(
+        self,
+        holding_period: int = 20,
+        config: Config | None = None,
+    ) -> int:
         """Realize old cloud signals using the current run's raw market data.
 
         GitHub Actions does not restore the ignored SQLite file between runs,
@@ -268,7 +297,11 @@ class SupabaseClient:
             return 0
 
         from src.actuals import calculate_actuals
-        calculated = calculate_actuals(pending, holding_period=holding_period)
+        calculated = calculate_actuals(
+            pending,
+            holding_period=holding_period,
+            config=config,
+        )
         if calculated.empty:
             return 0
         has_execution_schema = self._remote_column_available(
@@ -313,26 +346,45 @@ class SupabaseClient:
         init_db()
         conn = get_conn()
         rows = conn.execute(
-            "SELECT run_date, accuracy, precision, recall, f1, roc_auc, status, run_key "
+            "SELECT run_date, accuracy, precision, recall, f1, roc_auc, "
+            "execution_evaluation_dates, execution_top3_win_rate, "
+            "execution_top3_excess_return, execution_universe_excess_return, "
+            "execution_top3_spread, status, run_key "
             "FROM pipeline_runs ORDER BY id DESC LIMIT 1"
         ).fetchall()
         conn.close()
         if not rows:
             return 0
+        row = rows[0]
         has_run_key = self._remote_column_available("pipeline_runs", "run_key")
-        run_key = str(rows[0][7]) if rows[0][7] else str(rows[0][0])[:10]
+        run_key = str(row[12]) if row[12] else str(row[0])[:10]
+        execution_columns = (
+            "execution_evaluation_dates",
+            "execution_top3_win_rate",
+            "execution_top3_excess_return",
+            "execution_universe_excess_return",
+            "execution_top3_spread",
+        )
+        execution_available = {
+            column: self._remote_column_available("pipeline_runs", column)
+            for column in execution_columns
+        }
+        payload = {
+            "run_date": str(row[0]) if row[0] else None,
+            "accuracy": float(row[1]) if row[1] is not None else None,
+            "precision": float(row[2]) if row[2] is not None else None,
+            "recall": float(row[3]) if row[3] is not None else None,
+            "f1": float(row[4]) if row[4] is not None else None,
+            "roc_auc": float(row[5]) if row[5] is not None else None,
+            "status": row[11],
+            **({"run_key": run_key} if has_run_key and run_key else {}),
+        }
+        for offset, column in enumerate(execution_columns, start=6):
+            if execution_available[column]:
+                value = row[offset]
+                payload[column] = float(value) if value is not None else None
         data = [
-            {
-                "run_date": str(r[0]) if r[0] else None,
-                "accuracy": float(r[1]) if r[1] is not None else None,
-                "precision": float(r[2]) if r[2] is not None else None,
-                "recall": float(r[3]) if r[3] is not None else None,
-                "f1": float(r[4]) if r[4] is not None else None,
-                "roc_auc": float(r[5]) if r[5] is not None else None,
-                "status": r[6],
-                **({"run_key": run_key} if has_run_key and run_key else {}),
-            }
-            for r in rows
+            payload,
         ]
         return self._upsert(
             "pipeline_runs",
@@ -374,7 +426,7 @@ class SupabaseClient:
             data.append(payload)
         return self._upsert("strategy_performance", data, on_conflict="strategy_name,signal_date,ticker")
 
-    def sync_all(self) -> dict[str, int]:
+    def sync_all(self, config: Config | None = None) -> dict[str, int]:
         from src.database import init_db
         init_db()
         if not self.init_tables():
@@ -383,7 +435,7 @@ class SupabaseClient:
             )
         counts = {}
         counts["signals"] = self.sync_signals()
-        counts["remote_actuals"] = self.backfill_remote_actuals()
+        counts["remote_actuals"] = self.backfill_remote_actuals(config=config)
         counts["actuals"] = self.sync_actuals()
         counts["pipeline_runs"] = self.sync_pipeline_runs()
         counts["strategy_performance"] = self.sync_strategy_performance()
@@ -549,7 +601,19 @@ def get_client() -> SupabaseClient | None:
     return SupabaseClient(cfg)
 
 
-def sync_all() -> dict[str, int] | None:
+def clear_publication_for_date(signal_date: str) -> dict[str, int] | None:
+    """Clear one no-trade publication when cloud writes are configured."""
+    client = get_client()
+    if client is None:
+        log.info("Supabase not configured — skipping no-trade cleanup")
+        return None
+    if not client.cfg.service_key:
+        log.warning("SUPABASE_SERVICE_KEY is not configured — skipping no-trade cleanup")
+        return None
+    return client.clear_publication_for_date(signal_date)
+
+
+def sync_all(config: Config | None = None) -> dict[str, int] | None:
     client = get_client()
     if client is None:
         log.info("Supabase not configured — skipping cloud sync")
@@ -557,4 +621,4 @@ def sync_all() -> dict[str, int] | None:
     if not client.cfg.service_key:
         log.warning("SUPABASE_SERVICE_KEY is not configured — skipping cloud sync")
         return None
-    return client.sync_all()
+    return client.sync_all(config=config)

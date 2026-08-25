@@ -2,15 +2,15 @@ from __future__ import annotations
 
 import logging
 import time
-from datetime import datetime, date
+from datetime import date, datetime
 
 import numpy as np
 import pandas as pd
 import yfinance as yf
 
-from src.data.universe import VN30_TICKERS
-from src.data.collector import OHLCVCollector
 from src.config import Config
+from src.data.collector import OHLCVCollector
+from src.data.universe import VN30_TICKERS
 
 log = logging.getLogger(__name__)
 
@@ -748,9 +748,7 @@ def summarize_portfolio(
     by_date["pnl"] = by_date["total_value"] - by_date["total_invested"]
     by_date["pnl_pct"] = by_date["pnl"] / by_date["total_invested"].replace(0, np.nan)
     last = by_date.iloc[-1]
-    first = by_date.iloc[0]
     years = (by_date["date"].max() - by_date["date"].min()).days / 365.25
-    total_ret = last["pnl_pct"]
     cagr = (last["total_value"] / last["total_invested"]) ** (1 / years) - 1 if years > 0 and last["total_invested"] > 0 else 0.0
     return {
         "total_invested": last["total_invested"],
@@ -771,7 +769,7 @@ def print_portfolio(portfolio_df: pd.DataFrame) -> None:
         return
 
     print(f"\n{'='*60}")
-    print(f"  DANH MUC TICH SAN")
+    print("  DANH MUC TICH SAN")
     print(f"  Period: {summary['history']['date'].min().date()} -> {summary['history']['date'].max().date()} ({summary['years']} years)")
     print(f"{'='*60}")
     print(f"  Holdings:        {summary['holdings']}")

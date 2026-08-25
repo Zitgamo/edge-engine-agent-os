@@ -9,6 +9,7 @@ from src.database import _ensure_column, get_conn
 from src.strategies.accumulation import AccumulationStrategy
 from src.strategies.base import Strategy
 from src.strategies.breakout import BreakoutStrategy
+from src.strategies.breakout_volatility import BreakoutVolatilityStrategy
 from src.strategies.defensive import DefensiveStrategy
 from src.strategies.fundamental_value import FundamentalValueStrategy
 from src.strategies.mean_reversion import MeanReversionStrategy
@@ -17,7 +18,6 @@ from src.strategies.outperform import OutperformStrategy
 from src.strategies.rs_momentum import RSMomentumStrategy
 from src.strategies.rsi import RSIStrategy
 from src.strategies.trend_following import TrendFollowingStrategy
-from src.strategies.breakout_volatility import BreakoutVolatilityStrategy
 from src.time_utils import today_vn
 
 log = logging.getLogger(__name__)
@@ -278,7 +278,7 @@ class StrategyManager:
         log.info("Ensemble ranking: top 3 = %s", list(ensemble.head(3)["ticker"]))
         return ensemble
 
-    def backfill_strategy_actuals(self) -> int:
+    def backfill_strategy_actuals(self, config: Config | None = None) -> int:
         conn = get_conn()
         pending = pd.read_sql_query(
             """SELECT sp.id, sp.signal_date, sp.ticker
@@ -298,7 +298,11 @@ class StrategyManager:
         from src.actuals import calculate_actuals
 
         unique_signals = pending[["signal_date", "ticker"]].drop_duplicates()
-        actuals = calculate_actuals(unique_signals, holding_period=self.holding_period)
+        actuals = calculate_actuals(
+            unique_signals,
+            holding_period=self.holding_period,
+            config=config,
+        )
         if actuals.empty:
             return 0
         actual_map = {

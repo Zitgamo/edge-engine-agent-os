@@ -1,8 +1,53 @@
 from __future__ import annotations
 
+import pandas as pd
+
 from src import database, supabase_client
 from src.strategies.manager import StrategyManager
 from src.supabase_client import SupabaseClient, SupabaseConfig
+
+
+def test_cli_signal_history_merges_cloud_only_older_rows(monkeypatch) -> None:
+    from src import cli
+
+    local = pd.DataFrame([{
+        "signal_date": "2026-08-18",
+        "ticker": "AAA",
+        "rank": 1,
+        "score": 0.9,
+        "actual_outperform": None,
+    }])
+    cloud = [{
+        "signal_date": "2026-08-18",
+        "ticker": "AAA",
+        "rank": 1,
+        "score": 0.9,
+        "actual_excess_return_20d": 0.04,
+        "actual_outperform": 1,
+    }, {
+        "signal_date": "2026-08-15",
+        "ticker": "BBB",
+        "rank": 1,
+        "score": 0.8,
+        "actual_excess_return_20d": -0.02,
+        "actual_outperform": 0,
+    }]
+
+    monkeypatch.setattr(database, "get_signals", lambda limit: local)
+
+    class FakeClient:
+        def get_signals(self, limit):
+            return cloud
+
+    monkeypatch.setattr(supabase_client, "get_client", lambda: FakeClient())
+
+    result = cli._load_signal_history(limit=20)
+
+    assert result[["signal_date", "ticker"]].to_dict("records") == [
+        {"signal_date": "2026-08-18", "ticker": "AAA"},
+        {"signal_date": "2026-08-15", "ticker": "BBB"},
+    ]
+    assert result.iloc[0]["actual_excess_return_20d"] == 0.04
 
 
 def test_strategy_history_reader_falls_back_to_legacy_schema(monkeypatch) -> None:
@@ -58,3 +103,28 @@ def test_strategy_manager_restores_adaptive_weights_from_cloud(monkeypatch, tmp_
 
     assert weights["outperform"] == 0.1
     assert weights["rs_momentum"] == 1.0
+
+
+def test_strategy_backfill_uses_supplied_config(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(database, "DB_PATH", tmp_path / "engine.db")
+    manager = StrategyManager(include_research=False)
+    conn = database.get_conn()
+    conn.execute(
+        """INSERT INTO strategy_performance
+           (strategy_name, signal_date, ticker, rank, score)
+           VALUES ('outperform', '2026-01-01', 'AAA', 1, 0.9)"""
+    )
+    conn.commit()
+    conn.close()
+
+    config = object()
+    captured = {}
+
+    def calculate(signals, holding_period, config=None):
+        captured["config"] = config
+        return pd.DataFrame()
+
+    monkeypatch.setattr("src.actuals.calculate_actuals", calculate)
+
+    assert manager.backfill_strategy_actuals(config=config) == 0
+    assert captured["config"] is config

@@ -1,11 +1,10 @@
 ﻿from __future__ import annotations
 
 import pandas as pd
-import pytest
 
-from src.strategies.trend_following import TrendFollowingStrategy
 from src.strategies.breakout_volatility import BreakoutVolatilityStrategy
 from src.strategies.manager import StrategyManager
+from src.strategies.trend_following import TrendFollowingStrategy
 
 
 def _create_sample_market_data() -> pd.DataFrame:

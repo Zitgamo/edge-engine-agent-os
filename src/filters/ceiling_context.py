@@ -28,7 +28,6 @@ def analyze_stock(df: pd.DataFrame, ticker: str | None = None) -> dict:
     """
     df = df.sort_values("date").tail(LOOKBACK_DAYS).copy()
     closes = df["close"].values
-    dates = df["date"].values
     volumes = df["volume"].values if "volume" in df.columns else None
 
     if len(closes) < 10:
@@ -36,8 +35,6 @@ def analyze_stock(df: pd.DataFrame, ticker: str | None = None) -> dict:
 
     peak = float(np.max(closes))
     trough = float(np.min(closes))
-    peak_idx = int(np.argmax(closes))
-    trough_idx = int(np.argmin(closes))
     current = float(closes[-1])
     drawdown = (trough - peak) / peak
     recovery = (current - trough) / trough if trough > 0 else 0.0
@@ -121,7 +118,6 @@ def adjust_rankings(
     """Post-process rankings: adjust scores based on ceiling/floor context."""
     import glob
     import os
-    from pathlib import Path
 
     from src.config import Config
 
@@ -157,8 +153,8 @@ def adjust_rankings(
 
 def report_ceiling_context(tickers: list[str], raw_data_dir: str | None = None) -> list[dict]:
     """Generate detailed ceiling context report for a list of tickers."""
-    import os
     import glob
+    import os
 
     if raw_data_dir is None:
         from src.config import Config

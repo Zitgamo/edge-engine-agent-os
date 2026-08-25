@@ -29,14 +29,17 @@ def summarize_strategy_attribution(
     *,
     return_col: str | None = None,
     round_trip_cost: float = 0.0,
+    returns_are_net: bool = True,
 ) -> pd.DataFrame:
     """Summarize realized strategy outcomes without counting duplicate trades.
 
-    ``frame[return_col]`` is treated as the gross excess return for one
-    realized trade. The configured round-trip cost is subtracted once. Rows
-    are de-duplicated by strategy, signal date and ticker; the same ticker
-    selected by two different strategies remains a trade in each strategy's
-    attribution, but never twice within one strategy.
+    Persisted ``actual_excess_return_*`` values already include the execution
+    round-trip cost.  They are therefore treated as net by default.  For a
+    caller supplying a gross return column, pass ``returns_are_net=False`` so
+    the configured cost is subtracted exactly once. Rows are de-duplicated by
+    strategy, signal date and ticker; the same ticker selected by two
+    different strategies remains a trade in each strategy's attribution, but
+    never twice within one strategy.
     """
     if frame.empty:
         return _empty_result()
@@ -69,7 +72,9 @@ def summarize_strategy_attribution(
     if data.empty:
         return _empty_result()
     data = data.drop_duplicates(["strategy_name", "signal_date", "ticker"])
-    data["return_net"] = data[selected_return_col] - float(round_trip_cost)
+    data["return_net"] = data[selected_return_col]
+    if not returns_are_net:
+        data["return_net"] = data["return_net"] - float(round_trip_cost)
 
     rows: list[dict[str, object]] = []
     for strategy_name, strategy in data.groupby("strategy_name", sort=True):
@@ -82,9 +87,9 @@ def summarize_strategy_attribution(
         basket_returns = basket["basket_return_net"]
         rows.append({
             "strategy_name": strategy_name,
-            "trade_count": int(len(strategy)),
+            "trade_count": len(strategy),
             "signal_dates": int(strategy["signal_date"].nunique()),
-            "basket_count": int(len(basket)),
+            "basket_count": len(basket),
             "win_rate": float((trade_returns > 0).mean()),
             "avg_return_net": float(trade_returns.mean()),
             "median_return_net": float(trade_returns.median()),
@@ -118,6 +123,7 @@ def load_realized_strategy_attribution(
                     cloud_frame,
                     return_col="actual_excess_return_20d",
                     round_trip_cost=round_trip_cost,
+                    returns_are_net=True,
                 )
         except Exception:
             pass
@@ -155,4 +161,5 @@ def load_realized_strategy_attribution(
         frame,
         return_col="actual_excess_return_20d",
         round_trip_cost=round_trip_cost,
+        returns_are_net=True,
     )

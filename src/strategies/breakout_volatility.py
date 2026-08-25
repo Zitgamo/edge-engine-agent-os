@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import logging
+
 import pandas as pd
 
 from src.features.strategy import add_strategy_features

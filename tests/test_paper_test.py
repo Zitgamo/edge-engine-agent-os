@@ -4,8 +4,7 @@ import pandas as pd
 import pytest
 
 from src import database
-from src.research.paper_test import load_paper_test_readiness
-from src.research.paper_test import summarize_paper_test_readiness
+from src.research.paper_test import load_paper_test_readiness, summarize_paper_test_readiness
 
 
 def test_paper_test_counts_only_complete_deduplicated_baskets() -> None:

@@ -48,6 +48,7 @@ if df.empty:
     st.stop()
 
 from src.actuals import add_execution_excess_column
+
 df = add_execution_excess_column(df)
 
 df["signal_date"] = pd.to_datetime(df["signal_date"])

@@ -3,10 +3,7 @@ from __future__ import annotations
 import logging
 
 import pandas as pd
-import xgboost as xgb
 
-from src.config import Config
-from src.model.trainer import FEATURE_COLS
 from src.strategies.base import Strategy
 
 log = logging.getLogger(__name__)

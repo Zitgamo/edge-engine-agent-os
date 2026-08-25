@@ -71,27 +71,56 @@ def _load_prices(
     cache: dict[str, pd.DataFrame],
     required_date: str | None = None,
     days: int = 365,
+    required_future_bars: int = 0,
 ) -> pd.DataFrame:
-    """Load a ticker, refreshing when persisted data does not cover a signal."""
-    if ticker in cache:
-        return cache[ticker]
+    """Load prices with enough forward coverage for a pending outcome."""
+
+    def covers_required_window(frame: pd.DataFrame) -> bool:
+        if frame.empty or required_date is None:
+            return not frame.empty
+        dates = frame["date"].dt.strftime("%Y-%m-%d").tolist()
+        try:
+            signal_idx = dates.index(str(required_date)[:10])
+        except ValueError:
+            return False
+        future_bars = len(dates) - signal_idx - 1
+        return future_bars >= max(0, int(required_future_bars))
+
+    cached = cache.get(ticker)
+    if cached is not None and covers_required_window(cached):
+        return cached
 
     path = Path(config.raw_data_dir) / f"{ticker}_raw.parquet"
+    persisted = pd.DataFrame()
     if path.exists():
         try:
-            result = _normalise_prices(pd.read_parquet(path))
-            dates = set(result["date"].dt.strftime("%Y-%m-%d")) if not result.empty else set()
-            if not result.empty and (required_date is None or required_date in dates):
-                cache[ticker] = result
-                return result
+            persisted = _normalise_prices(pd.read_parquet(path))
+            if covers_required_window(persisted):
+                cache[ticker] = persisted
+                return persisted
             if required_date is not None:
-                log.info("Persisted prices for %s do not cover %s; refreshing", ticker, required_date)
+                log.info(
+                    "Persisted prices for %s do not cover %s through %d future bars; refreshing",
+                    ticker,
+                    required_date,
+                    required_future_bars,
+                )
         except Exception as exc:
             log.warning("Cannot read persisted prices for %s: %s", ticker, exc)
 
-    result = _normalise_prices(collector.fetch(ticker, days=days))
-    cache[ticker] = result
-    return result
+    try:
+        fresh = _normalise_prices(collector.fetch(ticker, days=days))
+    except Exception as exc:
+        log.warning("Cannot refresh prices for %s: %s", ticker, exc)
+        fresh = pd.DataFrame()
+    if not fresh.empty:
+        cache[ticker] = fresh
+        return fresh
+
+    # A transient data-source outage should not discard a persisted early
+    # exit that is still independently computable.
+    cache[ticker] = persisted
+    return persisted
 
 
 def _history_days(required_date: str | None, holding_period: int) -> int:
@@ -137,6 +166,7 @@ def calculate_actuals(
             prices_cache,
             required_date=signal_dates.min().date().isoformat() if not signal_dates.empty else None,
             days=history_days,
+            required_future_bars=holding_period,
         )
     except Exception as exc:
         log.warning("Cannot load benchmark for actuals: %s", exc)
@@ -164,6 +194,7 @@ def calculate_actuals(
                 prices_cache,
                 required_date=signal_date,
                 days=history_days,
+                required_future_bars=holding_period,
             )
             dates = prices["date"].dt.strftime("%Y-%m-%d").tolist()
             if signal_date not in dates:

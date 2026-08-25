@@ -46,7 +46,7 @@ jobs:
       - name: Syntax smoke check
         run: |
           python -m compileall -q src tests
-          ruff check src tests --select E9
+          ruff check src tests
       - name: Run tests
         run: pytest -q
       - name: Persist fresh raw market data

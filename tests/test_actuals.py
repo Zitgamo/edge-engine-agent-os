@@ -109,3 +109,45 @@ def test_execution_excess_prefers_t20_and_falls_back_to_legacy() -> None:
     result = actuals.add_execution_excess_column(values)
 
     assert result["execution_excess_return"].tolist() == [0.2, -0.1]
+
+
+def test_actuals_refreshes_persisted_prices_without_full_horizon(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    dates = pd.date_range("2026-01-01", periods=25, freq="B")
+    full_prices = {
+        ticker: _prices(ticker, dates, base)
+        for ticker, base in (("AAA", 100), ("VNINDEX", 1_000))
+    }
+    for ticker, frame in full_prices.items():
+        frame.head(5).to_parquet(tmp_path / f"{ticker}_raw.parquet")
+
+    calls: list[str] = []
+
+    class FakeCollector:
+        def __init__(self, config):
+            self.config = config
+
+        def fetch(self, ticker: str, days: int):
+            calls.append(ticker)
+            return full_prices[ticker]
+
+    monkeypatch.setattr(actuals, "OHLCVCollector", FakeCollector)
+    config = Config()
+    config.raw_data_dir = tmp_path
+
+    result = actuals.calculate_actuals(
+        pd.DataFrame([{
+            "signal_date": "2026-01-01",
+            "ticker": "AAA",
+            "stop_loss": 0.0,
+            "take_profit": 0.0,
+        }]),
+        holding_period=20,
+        config=config,
+    )
+
+    assert len(result) == 1
+    assert set(calls) == {"AAA", "VNINDEX"}
+    assert result.loc[0, "realized_date"] == "2026-01-29"

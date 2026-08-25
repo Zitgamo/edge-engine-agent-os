@@ -35,7 +35,7 @@ def send_signal(signal_df, strategy_name: str = "ensemble") -> bool:
         picks.append(f"  #{rank} {ticker}  score={score:.4f}  SL={sl:+.0%}  TP={tp:+.0%}")
 
     lines = [
-        f"\U0001f4c8 *Edge Engine Signal*",
+        "\U0001f4c8 *Edge Engine Signal*",
         f"Date: {date}",
         f"Strategy: {strategy_name}",
         "",

@@ -44,6 +44,11 @@ CREATE TABLE IF NOT EXISTS pipeline_runs (
     recall REAL,
     f1 REAL,
     roc_auc REAL,
+    execution_evaluation_dates REAL,
+    execution_top3_win_rate REAL,
+    execution_top3_excess_return REAL,
+    execution_universe_excess_return REAL,
+    execution_top3_spread REAL,
     status TEXT
 );
 
@@ -73,6 +78,11 @@ ALTER TABLE actuals ADD COLUMN IF NOT EXISTS exit_price REAL;
 ALTER TABLE actuals ADD COLUMN IF NOT EXISTS execution_status TEXT;
 ALTER TABLE strategy_performance ADD COLUMN IF NOT EXISTS actual_excess_return_20d REAL;
 ALTER TABLE pipeline_runs ADD COLUMN IF NOT EXISTS run_key TEXT;
+ALTER TABLE pipeline_runs ADD COLUMN IF NOT EXISTS execution_evaluation_dates REAL;
+ALTER TABLE pipeline_runs ADD COLUMN IF NOT EXISTS execution_top3_win_rate REAL;
+ALTER TABLE pipeline_runs ADD COLUMN IF NOT EXISTS execution_top3_excess_return REAL;
+ALTER TABLE pipeline_runs ADD COLUMN IF NOT EXISTS execution_universe_excess_return REAL;
+ALTER TABLE pipeline_runs ADD COLUMN IF NOT EXISTS execution_top3_spread REAL;
 
 -- Legacy actual_excess_return_5d stored executable T+20 outcomes.
 UPDATE actuals

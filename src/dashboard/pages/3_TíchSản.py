@@ -11,21 +11,21 @@ import logging
 import time
 
 import pandas as pd
-import streamlit as st
-import plotly.graph_objects as go
 import plotly.express as px
+import plotly.graph_objects as go
+import streamlit as st
 
-from src.accumulation import backtest_tich_san, backtest_multi, backtest_compare_frequencies
+from src.accumulation import backtest_compare_frequencies, backtest_multi, backtest_tich_san
 from src.config import Config
+from src.dashboard.style import CUSTOM_CSS
 from src.data.collector import OHLCVCollector
 from src.data.universe import VN30_TICKERS, filter_quality
 from src.data.validator import DataValidator
-from src.dashboard.style import CUSTOM_CSS
+from src.features.macro import add_macro_features
 from src.features.returns import ReturnFeatures
 from src.features.rs import RelativeStrength
 from src.features.volatility import ATR
 from src.features.volume import VolumeSurge
-from src.features.macro import add_macro_features
 
 log = logging.getLogger(__name__)
 
@@ -342,7 +342,12 @@ if run_btn:
         if feat_path.exists():
             with st.spinner("Phân tích danh mục..."):
                 try:
-                    from src.accumulation import compute_ranking_history, simulate_dca_portfolio, summarize_portfolio, _fetch_prices
+                    from src.accumulation import (
+                        _fetch_prices,
+                        compute_ranking_history,
+                        simulate_dca_portfolio,
+                        summarize_portfolio,
+                    )
                     df_feat = pd.read_parquet(feat_path)
                     rank_hist = compute_ranking_history(df_feat)
                     top_tickers = rank_hist[rank_hist["in_top_5"]]["ticker"].unique()[:12]
@@ -394,8 +399,10 @@ if run_btn:
                         latest_display["signal"] = latest_display["signal"].map(labels).fillna(latest_display["signal"])
                         latest_display["shares"] = latest_display["shares"].apply(lambda x: f"{x:,.1f}")
                         def fmt(x):
-                            if abs(x) >= 1e9: return f"{x/1e9:.2f}t" if x >= 0 else f"-{abs(x)/1e9:.2f}t"
-                            if abs(x) >= 1e6: return f"{x/1e6:.0f}tr" if x >= 0 else f"-{abs(x)/1e6:.0f}tr"
+                            if abs(x) >= 1e9:
+                                return f"{x/1e9:.2f}t" if x >= 0 else f"-{abs(x)/1e9:.2f}t"
+                            if abs(x) >= 1e6:
+                                return f"{x/1e6:.0f}tr" if x >= 0 else f"-{abs(x)/1e6:.0f}tr"
                             return f"{x:,.0f}"
                         def fmt_pnl(x):
                             s = fmt(x)

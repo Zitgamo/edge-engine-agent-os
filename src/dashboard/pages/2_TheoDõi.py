@@ -9,9 +9,9 @@ if str(_root) not in sys.path:
     sys.path.insert(0, str(_root))
 
 import pandas as pd
-import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
+import streamlit as st
 
 from src.dashboard.style import CUSTOM_CSS
 from src.time_utils import today_vn
@@ -132,10 +132,9 @@ st.dataframe(daily, width="stretch", hide_index=True)
 st.markdown('<div class="section-title">REALTIME SIGNAL TRACKING</div>', unsafe_allow_html=True)
 
 try:
-    from src.tracking.realtime import get_signal_summary, track_signals
-
     # Load signals from either source
     from src.supabase_client import get_client
+    from src.tracking.realtime import get_signal_summary, track_signals
     client = get_client()
     if client:
         sigs_raw = client.get_signals(limit=100) if client else []

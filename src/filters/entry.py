@@ -25,7 +25,7 @@ def apply_entry_filters(
         "enabled": bool(getattr(config, "enable_entry_filters", False)),
         "status": "disabled",
         "reason": None,
-        "input_count": int(len(ranking)),
+        "input_count": len(ranking),
         "output_count": 0,
     }
     if ranking.empty:
@@ -98,9 +98,9 @@ def apply_entry_filters(
     filtered = filtered.sort_values("score", ascending=False).reset_index(drop=True)
     filtered["rank"] = range(1, len(filtered) + 1)
     min_picks = max(1, int(getattr(config, "min_entry_picks", 3)))
-    report["eligible_count"] = int(len(allowed))
+    report["eligible_count"] = len(allowed)
     report["min_entry_picks"] = min_picks
-    report["output_count"] = int(len(filtered))
+    report["output_count"] = len(filtered)
     if len(filtered) < min_picks:
         report.update(status="blocked", reason="fewer than minimum eligible picks")
         return filtered.iloc[0:0].copy(), report

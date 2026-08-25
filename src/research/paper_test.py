@@ -19,7 +19,6 @@ from src.config import Config
 from src.database import get_conn, init_db
 from src.model.schema import HOLDING_PERIOD, N_PICKS
 
-
 OUTPUT_COLUMNS = [
     "strategy_name",
     "trade_count",
@@ -82,7 +81,7 @@ def summarize_paper_test_readiness(
             baskets.append({
                 "signal_date": signal_date,
                 "basket_return": basket_return,
-                "trade_count": int(len(basket)),
+                "trade_count": len(basket),
             })
 
         basket_frame = pd.DataFrame(baskets)
@@ -107,10 +106,10 @@ def summarize_paper_test_readiness(
 
         complete_dates = set(basket_frame["signal_date"])
         complete_trades = realized[realized["signal_date"].isin(complete_dates)]
-        basket_count = int(len(basket_frame))
+        basket_count = len(basket_frame)
         reports.append({
             "strategy_name": strategy_name,
-            "trade_count": int(len(complete_trades)),
+            "trade_count": len(complete_trades),
             "basket_count": basket_count,
             "signal_dates": basket_count,
             "latest_signal_date": basket_frame["signal_date"].max().date().isoformat(),

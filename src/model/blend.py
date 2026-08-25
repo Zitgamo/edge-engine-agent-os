@@ -6,7 +6,6 @@ import re
 
 import pandas as pd
 
-
 _SCORE_PATTERN = re.compile(r"^score_(\d+)d$")
 
 

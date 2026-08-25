@@ -5,7 +5,7 @@ import pytest
 
 from src.config import Config
 from src.data.collector import OHLCVCollector
-from src.data.universe import get_ticker_universe, filter_quality
+from src.data.universe import filter_quality, get_ticker_universe
 from src.data.validator import DataValidator
 
 
