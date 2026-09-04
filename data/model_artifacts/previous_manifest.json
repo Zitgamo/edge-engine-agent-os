@@ -1,7 +1,7 @@
 {
-  "archive_sha256": "6fafa79c0eebf701416dbf0dbbc1a06818bc7cfbd48a15e5a2ff52b27008d636",
+  "archive_sha256": "4595126e9020c33071768fd3703809cd98629ec7743ab642b1ac4eb7a30cea7e",
   "archive_size_bytes": 779992,
-  "created_at": "2026-09-04T15:01:49.517592+00:00",
+  "created_at": "2026-09-04T12:22:00.463378+00:00",
   "model_version": "xgboost_technical_v7_execution_max_sl05_tp10_h20_2026-09-04",
   "models": [
     {

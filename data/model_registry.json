@@ -1,6 +1,6 @@
 {
   "last_decision": {
-    "created_at": "2026-09-04T12:22:00.464405+00:00",
+    "created_at": "2026-09-04T15:01:49.519610+00:00",
     "decision": "promoted_no_material_regression",
     "horizon": 20,
     "model_family": "xgboost_technical_v7_execution_max_sl05_tp10",
@@ -12,7 +12,7 @@
   "records": [
     {
       "artifact": {
-        "archive_sha256": "4595126e9020c33071768fd3703809cd98629ec7743ab642b1ac4eb7a30cea7e",
+        "archive_sha256": "6fafa79c0eebf701416dbf0dbbc1a06818bc7cfbd48a15e5a2ff52b27008d636",
         "archive_size_bytes": 779992,
         "model_count": 4,
         "model_version": "xgboost_technical_v7_execution_max_sl05_tp10_h20_2026-09-04"
@@ -37,7 +37,7 @@
         "universe_excess_return": -0.006661740172521599
       },
       "champion_model_version": "xgboost_technical_v7_execution_max_sl05_tp10_h20_2026-09-04",
-      "created_at": "2026-09-04T12:22:00.464405+00:00",
+      "created_at": "2026-09-04T15:01:49.519610+00:00",
       "decision": "promoted_no_material_regression",
       "deltas_vs_champion": {
         "execution_top3_excess_return": 0.0,
@@ -94,5 +94,5 @@
     }
   ],
   "schema_version": 1,
-  "updated_at": "2026-09-04T12:22:00.464405+00:00"
+  "updated_at": "2026-09-04T15:01:49.519610+00:00"
 }
