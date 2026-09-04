@@ -1,22 +1,68 @@
 {
   "last_decision": {
-    "created_at": "2026-09-04T11:25:02.121676+00:00",
-    "decision": "bootstrap_champion",
+    "created_at": "2026-09-04T12:22:00.464405+00:00",
+    "decision": "promoted_no_material_regression",
     "horizon": 20,
     "model_family": "xgboost_technical_v7_execution_max_sl05_tp10",
     "model_version": "xgboost_technical_v7_execution_max_sl05_tp10_h20_2026-09-04",
-    "reason": "No previous champion exists for this model scope.",
+    "reason": "Candidate passed the execution quality gate and stayed within 0.20% of the current champion.",
     "run_key": "2026-09-04",
     "status": "champion"
   },
   "records": [
     {
-      "champion_metrics": {},
-      "champion_model_version": null,
-      "created_at": "2026-09-04T11:25:02.121676+00:00",
-      "decision": "bootstrap_champion",
-      "deltas_vs_champion": {},
+      "artifact": {
+        "archive_sha256": "4595126e9020c33071768fd3703809cd98629ec7743ab642b1ac4eb7a30cea7e",
+        "archive_size_bytes": 779992,
+        "model_count": 4,
+        "model_version": "xgboost_technical_v7_execution_max_sl05_tp10_h20_2026-09-04"
+      },
+      "champion_metrics": {
+        "accuracy": 0.6083247156153051,
+        "evaluation_dates": 40.0,
+        "execution_evaluation_dates": 40.0,
+        "execution_top3_excess_return": 0.0022492276657347906,
+        "execution_top3_spread": 0.008910967838256388,
+        "execution_top3_win_rate": 0.4416666666666667,
+        "execution_universe_excess_return": -0.006661740172521599,
+        "f1": 0.2154324184360435,
+        "majority_baseline_accuracy": 0.6577042399172699,
+        "positive_rate": 0.3422957600827301,
+        "precision": 0.342668863261944,
+        "recall": 0.15709969788519637,
+        "roc_auc": 0.4994418476505349,
+        "top3_excess_return": 0.0022492276657347906,
+        "top3_spread": 0.008910967838256388,
+        "top3_win_rate": 0.4416666666666667,
+        "universe_excess_return": -0.006661740172521599
+      },
+      "champion_model_version": "xgboost_technical_v7_execution_max_sl05_tp10_h20_2026-09-04",
+      "created_at": "2026-09-04T12:22:00.464405+00:00",
+      "decision": "promoted_no_material_regression",
+      "deltas_vs_champion": {
+        "execution_top3_excess_return": 0.0,
+        "execution_top3_spread": 0.0
+      },
       "horizon": 20,
+      "live_validation": {
+        "avg_excess_return": null,
+        "basket_count": 0,
+        "baskets_to_minimum": 10,
+        "health_status": "pending",
+        "latest_signal_date": null,
+        "min_avg_excess_return": 0.0,
+        "min_baskets": 10,
+        "min_trades": 30,
+        "min_win_rate": 0.45,
+        "model_family": "xgboost_technical_v7_execution_max_sl05_tp10",
+        "model_versions": [],
+        "ready": false,
+        "reason": "No realized rows belong to the current model family yet.",
+        "status": "collecting",
+        "trade_count": 0,
+        "trades_to_minimum": 30,
+        "win_rate": null
+      },
       "max_regression": 0.002,
       "metrics": {
         "accuracy": 0.6083247156153051,
@@ -41,12 +87,12 @@
       "model_family": "xgboost_technical_v7_execution_max_sl05_tp10",
       "model_version": "xgboost_technical_v7_execution_max_sl05_tp10_h20_2026-09-04",
       "quality_passed": true,
-      "reason": "No previous champion exists for this model scope.",
+      "reason": "Candidate passed the execution quality gate and stayed within 0.20% of the current champion.",
       "run_key": "2026-09-04",
       "status": "champion",
       "trained_until": "2026-09-04"
     }
   ],
   "schema_version": 1,
-  "updated_at": "2026-09-04T11:25:02.121676+00:00"
+  "updated_at": "2026-09-04T12:22:00.464405+00:00"
 }
