@@ -28,9 +28,11 @@
 - [x] Candidate rejection when execution top-3 return or spread regresses beyond tolerance
 - [x] Fail-closed publication: quality/registry failure becomes an explicit no-trade state
 - [x] GitHub Actions persists registry history and dashboard exposes the latest decision
-- [ ] Add a persistent model-artifact store for physical rollback across runners
+- [x] Persistent versioned model-artifact store with checksum manifest and previous-champion rollback
+- [x] Realized T+20 live-validation circuit breaker (pending until 30 trades / 10 complete baskets)
 - [ ] Tune hyperparameters/entry thresholds only after a locked walk-forward experiment
 - [ ] Promote paper candidates only after the existing 30-basket / 100-trade gate
+- [ ] Build a shadow cohort so a challenger can accumulate direct realized T+20 evidence before promotion
 
 ## Phase 1 — Core (done)
 - [x] Pipeline fetch 126 mã VN, 23 features, ensemble 4 horizons

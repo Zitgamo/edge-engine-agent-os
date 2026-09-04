@@ -153,11 +153,29 @@ class Config:
     model_registry_path: Path = Path(
         os.getenv("MODEL_REGISTRY_PATH", "data/model_registry.json")
     )
+    model_artifact_dir: Path = Path(
+        os.getenv("MODEL_ARTIFACT_DIR", "data/model_artifacts")
+    )
     # Absolute return-point tolerance used by the champion/challenger guard.
     # 0.002 means a candidate may be at most 0.20 percentage points below the
     # active champion on either execution ranking metric.
     model_challenger_max_regression: float = float(
         os.getenv("MODEL_CHALLENGER_MAX_REGRESSION", "0.002")
+    )
+    # Actual T+20 validation is a live-health circuit breaker.  It remains
+    # pending until enough complete baskets/trades exist, so early production
+    # runs can collect evidence without creating a promotion deadlock.
+    model_realized_min_trades: int = int(
+        os.getenv("MODEL_REALIZED_MIN_TRADES", "30")
+    )
+    model_realized_min_baskets: int = int(
+        os.getenv("MODEL_REALIZED_MIN_BASKETS", "10")
+    )
+    model_realized_min_avg_excess_return: float = float(
+        os.getenv("MODEL_REALIZED_MIN_AVG_EXCESS_RETURN", "0.0")
+    )
+    model_realized_min_win_rate: float = float(
+        os.getenv("MODEL_REALIZED_MIN_WIN_RATE", "0.45")
     )
     min_model_quality_dates: int = int(os.getenv("MIN_MODEL_QUALITY_DATES", "30"))
     min_model_roc_auc: float = float(os.getenv("MIN_MODEL_ROC_AUC", "0.52"))
@@ -174,6 +192,7 @@ class Config:
         Path(self.processed_data_dir).mkdir(parents=True, exist_ok=True)
         Path(self.model_path).parent.mkdir(parents=True, exist_ok=True)
         Path(self.model_registry_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(self.model_artifact_dir).mkdir(parents=True, exist_ok=True)
         Path(self.log_file).parent.mkdir(parents=True, exist_ok=True)
 
     def paper_strategy_names(self) -> set[str]:

@@ -100,6 +100,7 @@ class ChallengerAssessment:
     deltas: dict[str, float]
     champion_model_version: str | None
     champion_metrics: dict[str, float]
+    live_validation: dict[str, Any]
     quality_passed: bool
     min_quality_dates: int
     max_regression: float
@@ -122,6 +123,7 @@ class ChallengerAssessment:
             "deltas_vs_champion": dict(self.deltas),
             "champion_model_version": self.champion_model_version,
             "champion_metrics": dict(self.champion_metrics),
+            "live_validation": dict(self.live_validation),
             "created_at": created_at or _utc_now(),
         }
 
@@ -139,6 +141,7 @@ def assess_challenger(
     max_regression: float = DEFAULT_MAX_REGRESSION,
     quality_passed: bool = True,
     quality_reason: str | None = None,
+    live_validation: Mapping[str, Any] | None = None,
 ) -> ChallengerAssessment:
     """Assess a candidate against the active champion without writing state.
 
@@ -158,6 +161,7 @@ def assess_challenger(
         if champion is not None
         else ""
     ) or None
+    live_validation_snapshot = dict(live_validation or {})
     min_dates = max(0, int(min_quality_dates))
 
     def result(
@@ -180,6 +184,7 @@ def assess_challenger(
             deltas=deltas or {},
             champion_model_version=champion_version,
             champion_metrics=champion_metrics,
+            live_validation=live_validation_snapshot,
             quality_passed=quality_passed,
             min_quality_dates=min_dates,
             max_regression=float(max_regression),
@@ -222,6 +227,27 @@ def assess_challenger(
             accepted=True,
             decision="bootstrap_champion",
             reason="No previous champion exists for this model scope.",
+        )
+
+    if (
+        live_validation_snapshot.get("ready")
+        and str(live_validation_snapshot.get("health_status", "")).lower()
+        == "underperforming"
+    ):
+        try:
+            live_avg_return = float(live_validation_snapshot.get("avg_excess_return", 0.0))
+            live_win_rate = float(live_validation_snapshot.get("win_rate", 0.0))
+        except (TypeError, ValueError):
+            live_avg_return = 0.0
+            live_win_rate = 0.0
+        return result(
+            accepted=False,
+            decision="champion_live_validation_failed",
+            reason=(
+                "Current champion is underperforming on realized T+20 evidence: "
+                f"avg excess={live_avg_return:+.2%}, "
+                f"win rate={live_win_rate:.1%}."
+            ),
         )
 
     missing_champion = [
@@ -359,6 +385,7 @@ class ModelRegistry:
         max_regression: float = DEFAULT_MAX_REGRESSION,
         quality_passed: bool = True,
         quality_reason: str | None = None,
+        live_validation: Mapping[str, Any] | None = None,
     ) -> ChallengerAssessment:
         """Assess a candidate using the latest persisted champion."""
         state = self.load()
@@ -375,9 +402,15 @@ class ModelRegistry:
             max_regression=max_regression,
             quality_passed=quality_passed,
             quality_reason=quality_reason,
+            live_validation=live_validation,
         )
 
-    def record_assessment(self, assessment: ChallengerAssessment) -> dict[str, Any]:
+    def record_assessment(
+        self,
+        assessment: ChallengerAssessment,
+        *,
+        artifact_manifest: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Persist one assessment and retire an older champion on promotion."""
         state = self.load()
         records = list(state["records"])
@@ -410,6 +443,14 @@ class ModelRegistry:
                     record["retired_at"] = created_at
 
         record = assessment.to_record(created_at=created_at)
+        if artifact_manifest is not None:
+            artifact_models = artifact_manifest.get("models") or []
+            record["artifact"] = {
+                "model_version": artifact_manifest.get("model_version"),
+                "archive_sha256": artifact_manifest.get("archive_sha256"),
+                "archive_size_bytes": artifact_manifest.get("archive_size_bytes"),
+                "model_count": len(artifact_models),
+            }
         records.append(record)
         state["records"] = records
         state["last_decision"] = {

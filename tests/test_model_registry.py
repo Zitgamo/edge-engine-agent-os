@@ -97,6 +97,34 @@ def test_material_regression_is_rejected_and_champion_remains(tmp_path) -> None:
     )
 
 
+def test_ready_live_underperformance_blocks_new_promotion(tmp_path) -> None:
+    registry = ModelRegistry(tmp_path / "model_registry.json")
+    first = _assessment(registry, _metrics(), "2026-09-03")
+    registry.record_assessment(first)
+
+    second = registry.assess_candidate(
+        _metrics(top3_return=0.02, spread=0.03),
+        model_family="test_model",
+        horizon=20,
+        model_version=build_model_version("test_model", 20, "2026-09-04"),
+        run_key="2026-09-04",
+        trained_until="2026-09-04",
+        min_quality_dates=30,
+        live_validation={
+            "ready": True,
+            "health_status": "underperforming",
+            "avg_excess_return": -0.01,
+            "win_rate": 0.30,
+        },
+    )
+
+    assert second.accepted is False
+    assert second.decision == "champion_live_validation_failed"
+    record = registry.record_assessment(second)
+    assert record["status"] == "rejected"
+    assert registry.latest_champion("test_model", 20)["run_key"] == "2026-09-03"
+
+
 def test_quality_failure_is_recorded_without_bootstrapping(tmp_path) -> None:
     registry = ModelRegistry(tmp_path / "model_registry.json")
     assessment = registry.assess_candidate(

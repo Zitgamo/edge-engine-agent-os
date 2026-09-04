@@ -35,6 +35,7 @@ from src.model.schema import (
 from src.model.schema import (
     HOLDING_PERIOD as _HOLDING_PERIOD,
 )
+from src.model.artifacts import ModelArtifactError, ModelArtifactStore
 from src.model.registry import (
     ModelRegistry,
     ModelRegistryError,
@@ -345,6 +346,28 @@ def run_pipeline(
     registry = ModelRegistry(
         getattr(config, "model_registry_path", "data/model_registry.json")
     )
+    artifact_store = ModelArtifactStore(
+        getattr(config, "model_artifact_dir", "data/model_artifacts")
+    )
+    model_paths = {
+        int(horizon): config.model_path_for_horizon(horizon)
+        for horizon in ENSEMBLE_HORIZONS
+    }
+    try:
+        restored_artifact = artifact_store.restore_current(model_paths)
+        if restored_artifact is not None:
+            log.info(
+                "Restored active model artifact %s before candidate training",
+                restored_artifact["model_version"],
+            )
+    except ModelArtifactError as exc:
+        log.error("Active model artifact failed validation: %s", exc)
+        try:
+            restored_artifact = artifact_store.restore_previous(model_paths)
+            if restored_artifact is None:
+                log.warning("No previous model artifact is available; rebuilding from data")
+        except ModelArtifactError as rollback_exc:
+            log.error("Could not restore previous model artifact: %s", rollback_exc)
     pending_assessment = None
 
     all_dfs: list[pd.DataFrame] = []
@@ -510,6 +533,36 @@ def run_pipeline(
     log.info("=== Walk-forward evaluation on test set ===")
     evaluator = ModelEvaluator()
     all_metrics = {}
+    try:
+        from src.model.realized import get_model_live_health
+
+        live_validation = get_model_live_health(
+            model_family=MODEL_VERSION,
+            min_trades=getattr(config, "model_realized_min_trades", 30),
+            min_baskets=getattr(config, "model_realized_min_baskets", 10),
+            min_avg_excess_return=getattr(
+                config,
+                "model_realized_min_avg_excess_return",
+                0.0,
+            ),
+            min_win_rate=getattr(config, "model_realized_min_win_rate", 0.45),
+            prefer_cloud=True,
+        )
+    except Exception as exc:  # pragma: no cover - provider-dependent
+        live_validation = {
+            "model_family": MODEL_VERSION,
+            "ready": False,
+            "status": "collecting",
+            "health_status": "pending",
+            "reason": f"Realized validation unavailable: {exc}",
+        }
+        log.warning("Could not load realized model validation: %s", exc)
+    log.info(
+        "Live model validation: %s trades / %s baskets (%s)",
+        live_validation.get("trade_count", 0),
+        live_validation.get("basket_count", 0),
+        live_validation.get("health_status", "pending"),
+    )
     for h, model in ensemble_models.items():
         spec = target_specs[h]
         target = spec.target_col
@@ -569,6 +622,7 @@ def run_pipeline(
                     ),
                     quality_passed=False,
                     quality_reason=str(exc),
+                    live_validation=live_validation,
                 )
                 registry.record_assessment(quality_assessment)
             except ModelRegistryError as registry_exc:
@@ -598,6 +652,7 @@ def run_pipeline(
                         "model_challenger_max_regression",
                         0.002,
                     ),
+                    live_validation=live_validation,
                 )
             except ModelRegistryError as exc:
                 log.error("Model registry could not be read: %s", exc)
@@ -647,18 +702,42 @@ def run_pipeline(
         model = xgb.XGBClassifier(**XGBOOST_PARAMS)
         model.fit(X_full, y_full, verbose=False)
         ensemble_models[h] = model
-        model_path = config.model_path_for_horizon(h)
+        model_path = model_paths[h]
         model_path.parent.mkdir(parents=True, exist_ok=True)
         model.save_model(str(model_path))
         log.info("Retrained T+%d on full %d samples", h, len(X_full))
 
+    try:
+        artifact_manifest = artifact_store.publish(
+            candidate_model_version,
+            model_paths,
+            trained_until=run_key,
+        )
+    except ModelArtifactError as exc:
+        log.error("Model artifact publication failed: %s", exc)
+        _publish_no_trade(
+            storage,
+            run_key,
+            all_metrics.get(f"T+{HOLDING_PERIOD}") or {},
+            status="artifact_failed",
+            config=config,
+        )
+        return
+
     if pending_assessment is not None:
         try:
-            registry.record_assessment(pending_assessment)
+            registry.record_assessment(
+                pending_assessment,
+                artifact_manifest=artifact_manifest,
+            )
         except ModelRegistryError as exc:
             # A missing or corrupted registry is fail-closed: model files may
             # exist locally, but no new production publication is allowed.
             log.error("Model registry could not be persisted: %s", exc)
+            try:
+                artifact_store.restore_previous(model_paths)
+            except ModelArtifactError as rollback_exc:
+                log.error("Could not roll back model artifact: %s", rollback_exc)
             report_metrics = all_metrics.get(f"T+{HOLDING_PERIOD}") or {}
             _publish_no_trade(
                 storage,

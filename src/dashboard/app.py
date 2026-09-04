@@ -145,6 +145,7 @@ if latest_run_day == current_market_date and latest_run_status == "quality_faile
 elif latest_run_day == current_market_date and latest_run_status in {
     "challenger_rejected",
     "registry_failed",
+    "artifact_failed",
 }:
     signal_status = "MODEL BLOCKED"
     signal_status_color = "#FF5252"
@@ -178,6 +179,25 @@ try:
     sigs = add_execution_excess_column(sigs)
 except Exception:
     pass
+try:
+    from src.model.realized import summarize_realized_model_history
+
+    live_validation_summary = summarize_realized_model_history(
+        sigs,
+        model_family=MODEL_VERSION,
+        min_trades=runtime_config.model_realized_min_trades,
+        min_baskets=runtime_config.model_realized_min_baskets,
+        min_avg_excess_return=runtime_config.model_realized_min_avg_excess_return,
+        min_win_rate=runtime_config.model_realized_min_win_rate,
+    )
+except Exception as exc:
+    log.warning("live model validation unavailable in dashboard: %s", exc)
+    live_validation_summary = {
+        "health_status": "pending",
+        "trade_count": 0,
+        "basket_count": 0,
+        "reason": f"Live validation unavailable: {exc}",
+    }
 
 
 # === HEADER ===
@@ -265,6 +285,7 @@ with tab_signals:
         elif latest_run_day == current_market_date and latest_run_status in {
             "challenger_rejected",
             "registry_failed",
+            "artifact_failed",
         }:
             st.error(
                 f"Pipeline phiên {latest_run_key} không được publish model mới; "
@@ -512,6 +533,13 @@ with tab_system:
                 f"Champion: {champion.get('model_version', '—')} · "
                 f"Run {champion.get('run_key', '—')}"
             )
+            artifact = champion.get("artifact") or {}
+            if artifact.get("archive_sha256"):
+                st.caption(
+                    "Artifact checksum: "
+                    f"{str(artifact['archive_sha256'])[:16]}… · "
+                    f"{artifact.get('model_count', '—')} horizons"
+                )
         if latest_candidate:
             deltas = latest_candidate.get("deltas_vs_champion") or {}
             delta_text = " · ".join(
@@ -534,6 +562,34 @@ with tab_system:
                 "Chưa có candidate nào được registry ghi nhận; lần pipeline kế tiếp "
                 "sẽ bootstrap champion sau khi vượt execution quality gate."
             )
+
+    with st.container(border=True):
+        st.markdown("**LIVE VALIDATION · REALIZED T+20**")
+        live_cols = st.columns(4)
+        with live_cols[0]:
+            st.metric(
+                "Trades đã realize",
+                f"{live_validation_summary.get('trade_count', 0)} / "
+                f"{live_validation_summary.get('min_trades', runtime_config.model_realized_min_trades)}",
+            )
+        with live_cols[1]:
+            st.metric(
+                "Baskets hoàn chỉnh",
+                f"{live_validation_summary.get('basket_count', 0)} / "
+                f"{live_validation_summary.get('min_baskets', runtime_config.model_realized_min_baskets)}",
+            )
+        with live_cols[2]:
+            avg_return = live_validation_summary.get("avg_excess_return")
+            st.metric(
+                "Avg excess T+20",
+                f"{float(avg_return):+.2%}" if avg_return is not None else "—",
+            )
+        with live_cols[3]:
+            st.metric(
+                "Live gate",
+                str(live_validation_summary.get("health_status", "pending")).upper(),
+            )
+        st.caption(live_validation_summary.get("reason", "Chưa có dữ liệu realized."))
 
     st.markdown(
         '<div class="section-title">SL/TP THEO ĐÁY GẦN NHẤT · HOLD / SCALP</div>',
