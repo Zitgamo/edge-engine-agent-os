@@ -21,6 +21,17 @@
 - [x] Out-of-sample walk-forward ensemble and OHLC-based SL/TP backtest
 - [x] Retry/quality gates, workflow concurrency, timeout, and smoke checks
 
+## Self-improving production guard — implemented 2026-09-04
+- [x] Daily rolling retrain on the latest regime-aware window
+- [x] Adaptive strategy weights from realized local + Supabase history
+- [x] Champion/challenger registry with stable model versions and atomic writes
+- [x] Candidate rejection when execution top-3 return or spread regresses beyond tolerance
+- [x] Fail-closed publication: quality/registry failure becomes an explicit no-trade state
+- [x] GitHub Actions persists registry history and dashboard exposes the latest decision
+- [ ] Add a persistent model-artifact store for physical rollback across runners
+- [ ] Tune hyperparameters/entry thresholds only after a locked walk-forward experiment
+- [ ] Promote paper candidates only after the existing 30-basket / 100-trade gate
+
 ## Phase 1 — Core (done)
 - [x] Pipeline fetch 126 mã VN, 23 features, ensemble 4 horizons
 - [x] 5 strategies + auto-select best

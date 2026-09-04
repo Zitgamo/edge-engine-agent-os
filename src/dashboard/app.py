@@ -16,6 +16,7 @@ import streamlit as st
 
 from src.dashboard.style import CUSTOM_CSS
 from src.config import Config
+from src.model.schema import HOLDING_PERIOD, MODEL_VERSION
 from src.time_utils import today_vn
 
 st.set_page_config(
@@ -86,6 +87,22 @@ def load_bottom_to_now_snapshot(
     return report, summary
 
 
+@st.cache_data(ttl=120, max_entries=2)
+def load_model_registry_summary(
+    registry_path: str,
+    model_family: str,
+    horizon: int,
+) -> dict:
+    """Load self-improvement state without making the dashboard brittle."""
+    try:
+        from src.model.registry import ModelRegistry
+
+        return ModelRegistry(registry_path).summary(model_family, horizon)
+    except Exception as exc:
+        log.warning("model registry unavailable: %s", exc)
+        return {"error": str(exc), "latest": None, "champion": None}
+
+
 sigs, perf, runs = load_overview()
 run_count = len(runs)
 if not sigs.empty and "signal_date" in sigs.columns:
@@ -125,6 +142,12 @@ latest_run_status = str(latest_run.get("status") or "").strip().lower()
 if latest_run_day == current_market_date and latest_run_status == "quality_failed":
     signal_status = "QUALITY BLOCKED"
     signal_status_color = "#FF5252"
+elif latest_run_day == current_market_date and latest_run_status in {
+    "challenger_rejected",
+    "registry_failed",
+}:
+    signal_status = "MODEL BLOCKED"
+    signal_status_color = "#FF5252"
 elif latest_run_day == current_market_date and latest_run_status == "no_trade":
     signal_status = "NO TRADE"
     signal_status_color = "#FFB74D"
@@ -138,6 +161,11 @@ else:
     signal_status = "NO SIGNAL"
     signal_status_color = "#FFB74D"
 runtime_config = Config()
+model_registry_summary = load_model_registry_summary(
+    str(runtime_config.model_registry_path),
+    MODEL_VERSION,
+    HOLDING_PERIOD,
+)
 production_exit_label = (
     f"{runtime_config.stop_loss:+.1%} / {runtime_config.take_profit:+.1%}"
 )
@@ -233,6 +261,14 @@ with tab_signals:
             st.error(
                 f"Pipeline phiên {latest_run_key} bị chặn bởi quality gate; "
                 "không phát tín hiệu để bảo toàn dữ liệu production."
+            )
+        elif latest_run_day == current_market_date and latest_run_status in {
+            "challenger_rejected",
+            "registry_failed",
+        }:
+            st.error(
+                f"Pipeline phiên {latest_run_key} không được publish model mới; "
+                "hệ thống giữ champion/no-trade để tránh hạ chất lượng production."
             )
         else:
             st.info(
@@ -437,6 +473,67 @@ with tab_system:
         f"Trạng thái: {run_status_label} · "
         f"Tín hiệu gần nhất: {latest_signal_date or '—'}"
     )
+
+    st.markdown(
+        '<div class="section-title">SELF-IMPROVE · CHAMPION / CHALLENGER</div>',
+        unsafe_allow_html=True,
+    )
+    registry_error = model_registry_summary.get("error")
+    if registry_error:
+        st.warning(f"Model registry chưa khả dụng: {registry_error}")
+    else:
+        latest_candidate = model_registry_summary.get("latest") or {}
+        champion = model_registry_summary.get("champion") or {}
+        registry_cols = st.columns(4)
+        with registry_cols[0]:
+            st.metric(
+                "Champion đang active",
+                "Có" if champion else "Chưa bootstrap",
+            )
+        with registry_cols[1]:
+            st.metric(
+                "Candidate gần nhất",
+                str(latest_candidate.get("status", "—")).upper(),
+            )
+        with registry_cols[2]:
+            st.metric(
+                "Số quyết định",
+                str(model_registry_summary.get("record_count", 0)),
+            )
+        with registry_cols[3]:
+            tolerance = latest_candidate.get(
+                "max_regression",
+                runtime_config.model_challenger_max_regression,
+            )
+            st.metric("Dung sai suy giảm", f"{float(tolerance):.2%}")
+
+        if champion:
+            st.caption(
+                f"Champion: {champion.get('model_version', '—')} · "
+                f"Run {champion.get('run_key', '—')}"
+            )
+        if latest_candidate:
+            deltas = latest_candidate.get("deltas_vs_champion") or {}
+            delta_text = " · ".join(
+                f"{name} {float(value):+.2%}"
+                for name, value in deltas.items()
+            )
+            st.caption(
+                f"Đánh giá {latest_candidate.get('model_version', '—')} · "
+                f"{latest_candidate.get('decision', '—')}"
+                + (f" · Δ {delta_text}" if delta_text else "")
+            )
+            reason = latest_candidate.get("reason")
+            if reason:
+                if latest_candidate.get("status") == "rejected":
+                    st.warning(reason)
+                else:
+                    st.info(reason)
+        else:
+            st.caption(
+                "Chưa có candidate nào được registry ghi nhận; lần pipeline kế tiếp "
+                "sẽ bootstrap champion sau khi vượt execution quality gate."
+            )
 
     st.markdown(
         '<div class="section-title">SL/TP THEO ĐÁY GẦN NHẤT · HOLD / SCALP</div>',

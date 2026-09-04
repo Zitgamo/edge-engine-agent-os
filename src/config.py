@@ -150,6 +150,15 @@ class Config:
     # 2026 signal when the cross-sectional regime has changed.
     model_training_days: int = int(os.getenv("MODEL_TRAINING_DAYS", "180"))
     model_quality_test_days: int = int(os.getenv("MODEL_QUALITY_TEST_DAYS", "40"))
+    model_registry_path: Path = Path(
+        os.getenv("MODEL_REGISTRY_PATH", "data/model_registry.json")
+    )
+    # Absolute return-point tolerance used by the champion/challenger guard.
+    # 0.002 means a candidate may be at most 0.20 percentage points below the
+    # active champion on either execution ranking metric.
+    model_challenger_max_regression: float = float(
+        os.getenv("MODEL_CHALLENGER_MAX_REGRESSION", "0.002")
+    )
     min_model_quality_dates: int = int(os.getenv("MIN_MODEL_QUALITY_DATES", "30"))
     min_model_roc_auc: float = float(os.getenv("MIN_MODEL_ROC_AUC", "0.52"))
     min_model_top3_excess_return: float = float(
@@ -164,6 +173,7 @@ class Config:
         Path(self.raw_data_dir).mkdir(parents=True, exist_ok=True)
         Path(self.processed_data_dir).mkdir(parents=True, exist_ok=True)
         Path(self.model_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(self.model_registry_path).parent.mkdir(parents=True, exist_ok=True)
         Path(self.log_file).parent.mkdir(parents=True, exist_ok=True)
 
     def paper_strategy_names(self) -> set[str]:

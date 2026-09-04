@@ -35,6 +35,11 @@ from src.model.schema import (
 from src.model.schema import (
     HOLDING_PERIOD as _HOLDING_PERIOD,
 )
+from src.model.registry import (
+    ModelRegistry,
+    ModelRegistryError,
+    build_model_version,
+)
 from src.model.schema import (
     N_PICKS as _N_PICKS,
 )
@@ -330,6 +335,17 @@ def run_pipeline(
     latest_benchmark_date = pd.Timestamp(bm["date"].max()).normalize()
     if not force and not _should_run_for_market_date(latest_benchmark_date):
         return
+    latest_market_date = latest_benchmark_date.date()
+    run_key = latest_market_date.isoformat()
+    candidate_model_version = build_model_version(
+        MODEL_VERSION,
+        HOLDING_PERIOD,
+        run_key,
+    )
+    registry = ModelRegistry(
+        getattr(config, "model_registry_path", "data/model_registry.json")
+    )
+    pending_assessment = None
 
     all_dfs: list[pd.DataFrame] = []
     collected = 0
@@ -533,17 +549,89 @@ def run_pipeline(
             # runner crash. Persist the diagnosis, keep the previous
             # production model untouched, and publish an explicit no-trade
             # result so scheduled workflows remain observable and idempotent.
-            latest_market_date = pd.Timestamp(latest_benchmark_date).date()
+            try:
+                quality_assessment = registry.assess_candidate(
+                    metrics,
+                    model_family=MODEL_VERSION,
+                    horizon=HOLDING_PERIOD,
+                    model_version=candidate_model_version,
+                    run_key=run_key,
+                    trained_until=run_key,
+                    min_quality_dates=getattr(
+                        config,
+                        "min_model_quality_dates",
+                        30,
+                    ),
+                    max_regression=getattr(
+                        config,
+                        "model_challenger_max_regression",
+                        0.002,
+                    ),
+                    quality_passed=False,
+                    quality_reason=str(exc),
+                )
+                registry.record_assessment(quality_assessment)
+            except ModelRegistryError as registry_exc:
+                log.error("Could not record quality-gate rejection: %s", registry_exc)
             log.error("Model quality gate blocked publication: %s", exc)
             _publish_no_trade(
                 storage,
-                latest_market_date.isoformat(),
+                run_key,
                 metrics,
                 status="quality_failed",
                 config=config,
             )
             log.warning("No trade published because the execution quality gate failed")
             return
+        if h == HOLDING_PERIOD:
+            try:
+                pending_assessment = registry.assess_candidate(
+                    metrics,
+                    model_family=MODEL_VERSION,
+                    horizon=HOLDING_PERIOD,
+                    model_version=candidate_model_version,
+                    run_key=run_key,
+                    trained_until=run_key,
+                    min_quality_dates=getattr(config, "min_model_quality_dates", 30),
+                    max_regression=getattr(
+                        config,
+                        "model_challenger_max_regression",
+                        0.002,
+                    ),
+                )
+            except ModelRegistryError as exc:
+                log.error("Model registry could not be read: %s", exc)
+                _publish_no_trade(
+                    storage,
+                    run_key,
+                    metrics,
+                    status="registry_failed",
+                    config=config,
+                )
+                return
+            log.info(
+                "T+%d challenger assessment: %s (%s)",
+                h,
+                pending_assessment.decision,
+                pending_assessment.reason,
+            )
+            if not pending_assessment.accepted:
+                try:
+                    registry.record_assessment(pending_assessment)
+                except ModelRegistryError as registry_exc:
+                    log.error("Could not record challenger rejection: %s", registry_exc)
+                _publish_no_trade(
+                    storage,
+                    run_key,
+                    metrics,
+                    status="challenger_rejected",
+                    config=config,
+                )
+                log.warning(
+                    "No trade published because the challenger was rejected: %s",
+                    pending_assessment.reason,
+                )
+                return
 
     log.info("=== Retrain on full data for production ===")
     for h in ENSEMBLE_HORIZONS:
@@ -563,6 +651,28 @@ def run_pipeline(
         model_path.parent.mkdir(parents=True, exist_ok=True)
         model.save_model(str(model_path))
         log.info("Retrained T+%d on full %d samples", h, len(X_full))
+
+    if pending_assessment is not None:
+        try:
+            registry.record_assessment(pending_assessment)
+        except ModelRegistryError as exc:
+            # A missing or corrupted registry is fail-closed: model files may
+            # exist locally, but no new production publication is allowed.
+            log.error("Model registry could not be persisted: %s", exc)
+            report_metrics = all_metrics.get(f"T+{HOLDING_PERIOD}") or {}
+            _publish_no_trade(
+                storage,
+                run_key,
+                report_metrics,
+                status="registry_failed",
+                config=config,
+            )
+            return
+        log.info(
+            "Published model champion %s for run %s",
+            candidate_model_version,
+            run_key,
+        )
 
     log.info("=== Generating ensemble scores ===")
     df_all = features.copy()
@@ -683,7 +793,7 @@ def run_pipeline(
     )
     sm.backfill_strategy_actuals(config=config)
     storage.save_processed(signal, "signal.parquet")
-    save_signals(signal, model_version=MODEL_VERSION)
+    save_signals(signal, model_version=candidate_model_version)
     log.info("Top %d (ensemble): %s", N_PICKS, list(signal["ticker"]))
 
     log.info("=== Ceiling context analysis (top picks) ===")
