@@ -26,7 +26,12 @@ def blend_horizon_scores(
     Raw classifier probabilities are not necessarily calibrated to the same
     scale across horizons.  ``rank`` mode therefore blends each horizon's
     cross-sectional percentile within a market date.  ``raw`` is retained for
-    compatibility and for controlled experiments.
+    compatibility and for controlled experiments.  ``max`` selects the
+    strongest available raw probability for each row; it is useful when the
+    horizons represent independent confirmation signals rather than a single
+    calibrated probability.  ``max`` deliberately ignores ``weights`` because
+    a weighted maximum has no meaningful interpretation; the requested
+    ``horizons`` list controls which models participate.
     """
     columns = [f"score_{h}d" for h in horizons if f"score_{h}d" in frame.columns]
     if not columns:
@@ -43,8 +48,12 @@ def blend_horizon_scores(
         else:
             for column in columns:
                 normalized[column] = scores[column].rank(method="average", pct=True)
+    elif mode == "max":
+        result = scores.max(axis=1, skipna=True)
+        result.name = "ensemble_score"
+        return result
     elif mode != "raw":
-        raise ValueError("mode must be 'rank' or 'raw'")
+        raise ValueError("mode must be 'rank', 'raw', or 'max'")
 
     configured = weights or {}
     column_weights = {

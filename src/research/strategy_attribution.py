@@ -18,10 +18,17 @@ OUTPUT_COLUMNS: Final[list[str]] = [
     "avg_basket_return_net",
     "cumulative_return_net",
 ]
+COHORT_OUTPUT_COLUMNS: Final[list[str]] = [
+    "strategy_name",
+    "strategy_version",
+    *OUTPUT_COLUMNS[1:],
+]
 
 
-def _empty_result() -> pd.DataFrame:
-    return pd.DataFrame(columns=OUTPUT_COLUMNS)
+def _empty_result(*, include_version: bool = False) -> pd.DataFrame:
+    return pd.DataFrame(
+        columns=COHORT_OUTPUT_COLUMNS if include_version else OUTPUT_COLUMNS
+    )
 
 
 def summarize_strategy_attribution(
@@ -30,6 +37,7 @@ def summarize_strategy_attribution(
     return_col: str | None = None,
     round_trip_cost: float = 0.0,
     returns_are_net: bool = True,
+    include_version: bool = False,
 ) -> pd.DataFrame:
     """Summarize realized strategy outcomes without counting duplicate trades.
 
@@ -42,7 +50,7 @@ def summarize_strategy_attribution(
     never twice within one strategy.
     """
     if frame.empty:
-        return _empty_result()
+        return _empty_result(include_version=include_version)
     required = {"strategy_name", "signal_date", "ticker"}
     missing = sorted(required - set(frame.columns))
     if missing:
@@ -70,14 +78,25 @@ def summarize_strategy_attribution(
         data = data[realized.eq(1) | data[selected_return_col].notna()].copy()
     data = data.dropna(subset=["strategy_name", "signal_date", "ticker", selected_return_col])
     if data.empty:
-        return _empty_result()
-    data = data.drop_duplicates(["strategy_name", "signal_date", "ticker"])
+        return _empty_result(include_version=include_version)
+    group_columns = ["strategy_name"]
+    if include_version:
+        if "strategy_version" not in data.columns:
+            data["strategy_version"] = "legacy_unknown"
+        data["strategy_version"] = (
+            data["strategy_version"].fillna("legacy_unknown").astype(str).str.strip()
+        )
+        data.loc[data["strategy_version"] == "", "strategy_version"] = "legacy_unknown"
+        group_columns.append("strategy_version")
+    data = data.drop_duplicates([*group_columns, "signal_date", "ticker"])
     data["return_net"] = data[selected_return_col]
     if not returns_are_net:
         data["return_net"] = data["return_net"] - float(round_trip_cost)
 
     rows: list[dict[str, object]] = []
-    for strategy_name, strategy in data.groupby("strategy_name", sort=True):
+    for group_key, strategy in data.groupby(group_columns, sort=True, dropna=False):
+        if not isinstance(group_key, tuple):
+            group_key = (group_key,)
         basket = (
             strategy.groupby("signal_date", as_index=False)["return_net"]
             .mean()
@@ -85,8 +104,8 @@ def summarize_strategy_attribution(
         )
         trade_returns = strategy["return_net"]
         basket_returns = basket["basket_return_net"]
-        rows.append({
-            "strategy_name": strategy_name,
+        row: dict[str, object] = {
+            "strategy_name": group_key[0],
             "trade_count": len(strategy),
             "signal_dates": int(strategy["signal_date"].nunique()),
             "basket_count": len(basket),
@@ -96,14 +115,21 @@ def summarize_strategy_attribution(
             "positive_basket_rate": float((basket_returns > 0).mean()),
             "avg_basket_return_net": float(basket_returns.mean()),
             "cumulative_return_net": float((1.0 + basket_returns).prod() - 1.0),
-        })
-    return pd.DataFrame(rows, columns=OUTPUT_COLUMNS)
+        }
+        if include_version:
+            row["strategy_version"] = group_key[1]
+        rows.append(row)
+    return pd.DataFrame(
+        rows,
+        columns=COHORT_OUTPUT_COLUMNS if include_version else OUTPUT_COLUMNS,
+    )
 
 
 def load_realized_strategy_attribution(
     *,
     round_trip_cost: float = 0.0,
     prefer_cloud: bool = False,
+    include_version: bool = False,
 ) -> pd.DataFrame:
     """Load realized strategy outcomes and return the attribution report.
 
@@ -124,6 +150,7 @@ def load_realized_strategy_attribution(
                     return_col="actual_excess_return_20d",
                     round_trip_cost=round_trip_cost,
                     returns_are_net=True,
+                    include_version=include_version,
                 )
         except Exception:
             pass
@@ -136,6 +163,7 @@ def load_realized_strategy_attribution(
             """
             SELECT
                 sp.strategy_name,
+                sp.strategy_version,
                 sp.signal_date,
                 sp.ticker,
                 COALESCE(
@@ -162,4 +190,5 @@ def load_realized_strategy_attribution(
         return_col="actual_excess_return_20d",
         round_trip_cost=round_trip_cost,
         returns_are_net=True,
+        include_version=include_version,
     )

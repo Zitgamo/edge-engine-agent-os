@@ -51,8 +51,8 @@ ENSEMBLE_HORIZONS = _ENSEMBLE_HORIZONS
 TRAIN_SPLIT = 0.8
 N_PICKS = _N_PICKS
 HOLDING_PERIOD = _HOLDING_PERIOD
-STOP_LOSS = -0.03
-TAKE_PROFIT = 0.08
+STOP_LOSS = -0.005
+TAKE_PROFIT = 0.10
 
 
 def _publish_no_trade(
@@ -71,7 +71,12 @@ def _publish_no_trade(
     # no-trade result just removed.
     from src.database import backfill_actuals, clear_publication_for_date
 
-    clear_publication_for_date(signal_date)
+    runtime_config = config or Config()
+    paper_strategy_names = runtime_config.paper_strategy_names()
+    clear_publication_for_date(
+        signal_date,
+        preserve_strategy_names=paper_strategy_names,
+    )
     storage.save_processed(pd.DataFrame(), "ranking.parquet")
     storage.save_processed(pd.DataFrame(), "signal.parquet")
     backfill_actuals(holding_period=HOLDING_PERIOD, config=config)
@@ -83,7 +88,10 @@ def _publish_no_trade(
         sync_all,
     )
 
-    clear_cloud_publication_for_date(signal_date)
+    clear_cloud_publication_for_date(
+        signal_date,
+        preserve_strategy_names=paper_strategy_names,
+    )
     sync_all(config=config)
 
 
@@ -301,12 +309,18 @@ def run_pipeline(
     run_time = now_vn()
 
     universe = get_ticker_universe()
-    bm = _closed_market_sessions(collector.fetch("VNINDEX", days=365), run_time)
+    bm = _closed_market_sessions(
+        collector.fetch("VNINDEX", days=config.data_lookback_days),
+        run_time,
+    )
     benchmark_errors = validator.validate(bm)
     if benchmark_errors or bm.empty:
         raise RuntimeError(f"Benchmark data failed validation: {benchmark_errors}")
-    valid_benchmark_sources = {"yahoo", "vnstock_vci"}
-    if str(config.data_source).strip().lower() == "yfinance" and collector.last_benchmark_source not in valid_benchmark_sources:
+    valid_benchmark_sources = {"yahoo", "vnstock_vci", "kbs"}
+    if (
+        str(config.data_source).strip().lower() in {"yfinance", "kbs", "kbs_public"}
+        and collector.last_benchmark_source not in valid_benchmark_sources
+    ):
         raise RuntimeError(
             "Refusing to publish signals without the real VNINDEX benchmark "
             f"(source={collector.last_benchmark_source})"
@@ -322,7 +336,7 @@ def run_pipeline(
     skipped = 0
     for ticker in universe:
         try:
-            df = collector.fetch(ticker, days=365)
+            df = collector.fetch(ticker, days=config.data_lookback_days)
         except Exception as exc:
             log.exception("Failed to collect %s: %s", ticker, exc)
             skipped += 1
@@ -606,15 +620,68 @@ def run_pipeline(
             today_vn(),
         )
 
-    sm.save_signals(rankings, n=N_PICKS, signal_date=latest_market_date.isoformat())
-    sm.backfill_strategy_actuals(config=config)
-
     signal = SignalGenerator().pick_top_n(
         ranking, n=N_PICKS,
         stop_loss=config.stop_loss,
         take_profit=config.take_profit,
         signal_date=latest_market_date.isoformat(),
     )
+    if config.enable_ticker_exit_profiles:
+        from src.research.ticker_exit_optimizer import (
+            apply_exit_profiles,
+            has_approved_profiles,
+            load_ticker_exit_profiles,
+        )
+
+        exit_profiles = load_ticker_exit_profiles(config.ticker_exit_profile_path)
+        if has_approved_profiles(
+            exit_profiles,
+            baseline_atr_multiple=config.ticker_exit_baseline_atr_multiple,
+            baseline_take_profit=config.ticker_exit_baseline_take_profit,
+        ):
+            signal = apply_exit_profiles(
+                signal,
+                df_all,
+                exit_profiles,
+                fallback_stop_loss=config.stop_loss,
+                fallback_take_profit=config.take_profit,
+                baseline_atr_multiple=config.ticker_exit_baseline_atr_multiple,
+                baseline_take_profit=config.ticker_exit_baseline_take_profit,
+            )
+            log.info(
+                "Applied approved per-ticker exit profiles: %s",
+                {
+                    str(row.ticker): {
+                        "stop_loss": float(row.stop_loss),
+                        "take_profit": float(row.take_profit),
+                        "profile_used": bool(row.exit_profile_used),
+                    }
+                    for row in signal.itertuples(index=False)
+                },
+            )
+        else:
+            log.warning(
+                "Ticker exit profiles enabled but no approved profile document is available; "
+                "using configured production exits"
+            )
+
+    # The _ensemble rows represent the live production basket.  Persist the
+    # same per-ticker exits that were applied to the executable signal so
+    # strategy attribution measures the trade that was actually published.
+    if "_ensemble" in rankings and not signal.empty:
+        live_exits = signal.set_index("ticker")[["stop_loss", "take_profit"]]
+        ensemble = rankings["_ensemble"].copy()
+        ensemble["stop_loss"] = ensemble["ticker"].map(live_exits["stop_loss"])
+        ensemble["take_profit"] = ensemble["ticker"].map(live_exits["take_profit"])
+        rankings["_ensemble"] = ensemble
+
+    sm.save_signals(
+        rankings,
+        n=N_PICKS,
+        signal_date=latest_market_date.isoformat(),
+        config=config,
+    )
+    sm.backfill_strategy_actuals(config=config)
     storage.save_processed(signal, "signal.parquet")
     save_signals(signal, model_version=MODEL_VERSION)
     log.info("Top %d (ensemble): %s", N_PICKS, list(signal["ticker"]))
@@ -651,7 +718,17 @@ def run_pipeline(
 
     log.info("=== Syncing to cloud (Supabase) ===")
     from src.supabase_client import sync_all
-    sync_all(config=config)
+    strategy_publication_dates = (
+        {latest_market_date.isoformat()}
+        if all(strategy.name in rankings for strategy in sm.strategies)
+        else None
+    )
+    if strategy_publication_dates is None:
+        log.warning("Skipping cloud strategy pruning because the snapshot is incomplete")
+    sync_all(
+        config=config,
+        strategy_publication_dates=strategy_publication_dates,
+    )
 
     log.info("=== Pipeline complete ===")
 

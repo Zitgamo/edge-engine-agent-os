@@ -224,6 +224,33 @@ def test_clear_publication_for_date_removes_all_local_publishables(monkeypatch, 
     assert remaining == [0, 0, 0]
 
 
+def test_clear_publication_for_date_preserves_paper_strategy_rows(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(database, "DB_PATH", tmp_path / "engine.db")
+    database.init_db()
+    conn = database.get_conn()
+    conn.executemany(
+        """INSERT INTO strategy_performance
+           (strategy_name, signal_date, ticker, rank, score)
+           VALUES (?, '2026-08-18', ?, 1, 0.9)""",
+        [("outperform", "AAA"), ("vn30_rs_atr2_tp10", "BBB")],
+    )
+    conn.commit()
+    conn.close()
+
+    counts = database.clear_publication_for_date(
+        "2026-08-18",
+        preserve_strategy_names={"vn30_rs_atr2_tp10"},
+    )
+
+    assert counts["strategy_performance"] == 1
+    conn = database.get_conn()
+    rows = conn.execute(
+        "SELECT strategy_name, ticker FROM strategy_performance"
+    ).fetchall()
+    conn.close()
+    assert rows == [("vn30_rs_atr2_tp10", "BBB")]
+
+
 def test_backfill_actuals_uses_supplied_config(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(database, "DB_PATH", tmp_path / "engine.db")
     database.save_signals(pd.DataFrame([{
@@ -243,3 +270,39 @@ def test_backfill_actuals_uses_supplied_config(monkeypatch, tmp_path) -> None:
 
     assert database.backfill_actuals(config=config) == 0
     assert captured["config"] is config
+
+
+def test_paper_strategy_snapshot_is_idempotent_and_keeps_atr_stop(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setattr(database, "DB_PATH", tmp_path / "engine.db")
+    signals = pd.DataFrame([
+        {
+            "strategy_name": "vn30_rs_atr2_tp10",
+            "signal_date": "2026-08-26",
+            "ticker": "TCB",
+            "rank": 1,
+            "score": 0.9,
+            "stop_loss": -0.04,
+            "take_profit": 0.10,
+            "atr": 2.0,
+            "market_breadth_20d": 0.8,
+            "strategy_version": "paper_v1",
+        },
+    ])
+
+    assert database.save_paper_strategy_signals(signals) == 1
+    assert database.save_paper_strategy_signals(signals) == 1
+
+    conn = database.get_conn()
+    rows = conn.execute(
+        """SELECT strategy_name, ticker, stop_loss, take_profit, atr,
+                  market_breadth_20d, strategy_version
+           FROM strategy_performance"""
+    ).fetchall()
+    conn.close()
+
+    assert rows == [
+        ("vn30_rs_atr2_tp10", "TCB", -0.04, 0.10, 2.0, 0.8, "paper_v1")
+    ]

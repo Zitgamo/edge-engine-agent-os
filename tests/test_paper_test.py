@@ -60,6 +60,60 @@ def test_paper_test_marks_strategy_ready_at_minimum_baskets() -> None:
     assert row["progress_to_target"] == pytest.approx(0.5)
 
 
+def test_paper_test_requires_one_hundred_realized_trades_when_configured() -> None:
+    rows = []
+    for day in ("2026-01-01", "2026-01-02"):
+        for ticker, value in zip(("AAA", "BBB", "CCC"), (0.02, 0.01, -0.01)):
+            rows.append({
+                "strategy_name": "candidate",
+                "signal_date": day,
+                "ticker": ticker,
+                "return_net": value,
+            })
+
+    result = summarize_paper_test_readiness(
+        pd.DataFrame(rows),
+        min_picks=3,
+        min_baskets=2,
+        target_baskets=4,
+        min_trades=100,
+        target_trades=100,
+    )
+
+    row = result.iloc[0]
+    assert row["trade_count"] == 6
+    assert row["trades_to_minimum"] == 94
+    assert row["progress_to_trade_target"] == pytest.approx(0.06)
+    assert row["readiness"] == "collecting"
+
+
+def test_paper_test_can_keep_exit_versions_in_separate_cohorts() -> None:
+    rows = []
+    for version, value in (("paper_v1_fixed", 0.02), ("paper_v2_ticker_exit", -0.01)):
+        for ticker in ("AAA", "BBB", "CCC"):
+            rows.append({
+                "strategy_name": "paper",
+                "strategy_version": version,
+                "signal_date": "2026-01-01",
+                "ticker": ticker,
+                "return_net": value,
+            })
+
+    result = summarize_paper_test_readiness(
+        pd.DataFrame(rows),
+        min_picks=3,
+        min_baskets=1,
+        target_baskets=2,
+        include_version=True,
+    )
+
+    assert set(result["strategy_version"]) == {
+        "paper_v1_fixed",
+        "paper_v2_ticker_exit",
+    }
+    assert set(result["avg_return_net"]) == {0.02, -0.01}
+
+
 def test_paper_test_loader_recomputes_net_returns_from_raw_prices(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(database, "DB_PATH", tmp_path / "engine.db")
     dates = pd.date_range("2026-01-01", periods=25, freq="B")
@@ -103,3 +157,50 @@ def test_paper_test_loader_recomputes_net_returns_from_raw_prices(monkeypatch, t
     assert row["readiness"] == "ready"
     assert pd.notna(row["avg_return_net"])
     assert row["avg_return_net"] > 0.0
+
+
+def test_paper_test_loader_uses_realized_cloud_outcomes_without_paper_raw(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setattr(database, "DB_PATH", tmp_path / "engine.db")
+    cloud_rows = [
+        {
+            "strategy_name": "vn30_rs_atr2_tp10",
+            "signal_date": "2026-01-01",
+            "ticker": ticker,
+            "rank": rank,
+            "score": 0.9 - rank / 100,
+            "stop_loss": -0.04,
+            "take_profit": 0.10,
+            "actual_excess_return_20d": value,
+            "realized": 1,
+        }
+        for rank, (ticker, value) in enumerate(
+            (("AAA", 0.04), ("BBB", -0.01), ("CCC", 0.02)),
+            start=1,
+        )
+    ]
+
+    class FakeClient:
+        def get_strategy_performance(self):
+            return cloud_rows
+
+    monkeypatch.setattr("src.supabase_client.get_client", lambda: FakeClient())
+
+    result = load_paper_test_readiness(
+        raw_data_dir=tmp_path / "missing-production",
+        paper_raw_data_dir=tmp_path / "missing-paper",
+        min_baskets=1,
+        target_baskets=2,
+        min_trades=3,
+        target_trades=3,
+        prefer_cloud=True,
+    )
+
+    row = result.iloc[0]
+    assert row["strategy_name"] == "vn30_rs_atr2_tp10"
+    assert row["trade_count"] == 3
+    assert row["basket_count"] == 1
+    assert row["avg_return_net"] == pytest.approx((0.04 - 0.01 + 0.02) / 3)
+    assert row["readiness"] == "ready"

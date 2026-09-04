@@ -80,6 +80,28 @@ def test_tracker_uses_next_open_and_respects_settlement_delay() -> None:
     assert result["exit_date"] == "2026-01-06"
 
 
+def test_tracker_fills_a_gap_at_the_session_open() -> None:
+    dates = pd.bdate_range("2026-01-01", periods=5)
+    df = _ohlcv("AAA", list(dates))
+    df["open"] = [100.0, 100.0, 100.0, 90.0, 100.0]
+    df["close"] = [100.0, 100.0, 100.0, 90.0, 100.0]
+    df.loc[3, "low"] = 80.0
+
+    result = realtime.simulate_holding(
+        df,
+        signal_date="2026-01-01",
+        entry_price=100.0,
+        stop_loss=-0.05,
+        take_profit=0.10,
+        holding_period=4,
+        settlement_delay=2,
+    )
+
+    assert result["status"] == "HIT_SL"
+    assert result["exit_price"] == 90.0
+    assert result["gross_pnl"] == -0.10
+
+
 def test_track_signal_infers_next_session_open(monkeypatch) -> None:
     dates = pd.bdate_range("2026-01-01", periods=3)
     df = _ohlcv("AAA", list(dates))

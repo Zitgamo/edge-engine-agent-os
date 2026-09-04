@@ -200,7 +200,9 @@ def test_publish_no_trade_clears_local_and_cloud_publications(monkeypatch) -> No
     monkeypatch.setattr(
         database,
         "clear_publication_for_date",
-        lambda signal_date: events.append(("local_clear", signal_date)),
+        lambda signal_date, preserve_strategy_names=None: events.append(
+            ("local_clear", signal_date, preserve_strategy_names)
+        ),
     )
     monkeypatch.setattr(
         database,
@@ -212,7 +214,9 @@ def test_publish_no_trade_clears_local_and_cloud_publications(monkeypatch) -> No
     monkeypatch.setattr(
         supabase_client,
         "clear_publication_for_date",
-        lambda signal_date: events.append(("cloud_clear", signal_date)),
+        lambda signal_date, preserve_strategy_names=None: events.append(
+            ("cloud_clear", signal_date, preserve_strategy_names)
+        ),
     )
     monkeypatch.setattr(
         supabase_client,
@@ -227,8 +231,8 @@ def test_publish_no_trade_clears_local_and_cloud_publications(monkeypatch) -> No
         status="no_trade",
     )
 
-    assert ("local_clear", "2026-08-18") in events
-    assert ("cloud_clear", "2026-08-18") in events
+    assert any(event[0:2] == ("local_clear", "2026-08-18") for event in events)
+    assert any(event[0:2] == ("cloud_clear", "2026-08-18") for event in events)
     assert any(
         event[0] == "backfill" and event[1] == pipeline.HOLDING_PERIOD
         for event in events

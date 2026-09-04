@@ -10,6 +10,7 @@ import xgboost as xgb
 
 from src.config import Config
 from src.database import get_conn, init_db
+from src.execution import barrier_exit
 from src.model.blend import blend_horizon_scores
 from src.model.schema import FEATURE_COLS, TARGET_COL, XGBOOST_PARAMS
 from src.model.splits import (
@@ -111,14 +112,9 @@ def _sltp_excess_return(
     for held, row in enumerate(future.itertuples(index=False), start=1):
         if held <= 2:
             continue
-        low = float(row.low)
-        high = float(row.high)
-        if stop_loss < 0 and low <= entry * (1 + stop_loss):
-            exit_price = entry * (1 + stop_loss)
-            exit_date = str(row.date)[:10]
-            break
-        if take_profit > 0 and high >= entry * (1 + take_profit):
-            exit_price = entry * (1 + take_profit)
+        barrier = barrier_exit(entry, row, stop_loss, take_profit)
+        if barrier is not None:
+            exit_price = barrier[0]
             exit_date = str(row.date)[:10]
             break
         exit_price = float(row.close)
@@ -152,8 +148,8 @@ def backtest_sltp(
     holding_period: int = 20,
     round_trip_cost: float | None = None,
 ) -> pd.DataFrame:
-    sl_levels = sl_levels or [0.0, -0.01, -0.02, -0.03, -0.05]
-    tp_levels = tp_levels or [0.0, 0.02, 0.03, 0.05, 0.08, 0.10]
+    sl_levels = sl_levels or [0.0, -0.005, -0.01, -0.015, -0.02, -0.03, -0.04, -0.05]
+    tp_levels = tp_levels or [0.0, 0.03, 0.05, 0.08, 0.10, 0.12]
     if round_trip_cost is None:
         round_trip_cost = Config().round_trip_cost
 
@@ -405,7 +401,11 @@ def backtest_ensemble(
     }
 
     results = []
-    for method, col in [("mean", "ensemble_score"), ("max", "ensemble_max")]:
+    configured_method = Config().ensemble_blend_mode
+    score_methods = [(configured_method, "ensemble_score")]
+    if "ensemble_max" in df.columns and configured_method != "max":
+        score_methods.append(("max", "ensemble_max"))
+    for method, col in score_methods:
         for h in models:
             for n in [1, 3, 5]:
                 daily_rets = []
@@ -449,6 +449,7 @@ def auto_retrain() -> dict[str, float]:
     label-horizon purge and compare the candidate with a no-skill baseline.
     """
     init_db()
+    config = Config()
     df = pd.read_parquet("data/processed/features.parquet")
     horizon = int(TARGET_COL.rsplit("_", 1)[-1].removesuffix("d"))
     label_end_col = f"label_end_date_{horizon}d"
@@ -473,7 +474,7 @@ def auto_retrain() -> dict[str, float]:
         test_start=test_start,
         label_end_col=label_end_col,
     )
-    train = recent_date_window(train, Config().model_training_days)
+    train = recent_date_window(train, config.model_training_days)
     if train.empty or test.empty or train[TARGET_COL].nunique() < 2:
         raise ValueError("Not enough dated rows or target classes for auto-retrain evaluation")
 
@@ -496,8 +497,15 @@ def auto_retrain() -> dict[str, float]:
     print(f"Last signal date: {last_date}")
 
     if improvement > 0.01:
-        model_new.save_model(str(Config().model_path))
-        log.info("New model saved (improved over baseline by %.2f%%)", improvement * 100)
+        model_path = config.model_path_for_horizon(horizon)
+        model_path.parent.mkdir(parents=True, exist_ok=True)
+        model_new.save_model(str(model_path))
+        log.info(
+            "New T+%d model saved to %s (improved over baseline by %.2f%%)",
+            horizon,
+            model_path,
+            improvement * 100,
+        )
     else:
         log.info("Skipping deploy (improvement %.2f%% < 1%% threshold)", improvement * 100)
 

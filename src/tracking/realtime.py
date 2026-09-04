@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 
 from src.config import Config
+from src.execution import barrier_exit
 from src.time_utils import today_vn
 
 log = logging.getLogger(__name__)
@@ -132,8 +133,6 @@ def simulate_holding(
 
     entry_idx = idx + 1
     df_after = df.iloc[entry_idx: entry_idx + holding_period].reset_index(drop=True)
-    sl_price = entry_price * (1 + stop_loss)
-    tp_price = entry_price * (1 + take_profit)
 
     days_held = 0
     exit_price = None
@@ -162,21 +161,10 @@ def simulate_holding(
 
         status = "ACTIVE"
 
-        # Check SL first (conservative: assume worst case on wide-range days)
-        # A non-negative stop loss disables the stop-loss leg.  This keeps
-        # zero-valued test/config overrides from becoming an immediate exit.
-        if stop_loss < 0 and low <= sl_price:
-            exit_price = sl_price
+        barrier = barrier_exit(entry_price, row, stop_loss, take_profit)
+        if barrier is not None:
+            exit_price, status = barrier
             exit_date = current_date
-            status = "HIT_SL"
-            break
-
-        # Check TP (only if SL not hit)
-        # A non-positive take profit disables the take-profit leg.
-        if take_profit > 0 and high >= tp_price:
-            exit_price = tp_price
-            exit_date = current_date
-            status = "HIT_TP"
             break
 
         # Still holding, update current price
@@ -208,8 +196,8 @@ def track_signal(
     ticker: str,
     signal_date: str,
     entry_price: float | None = None,
-    stop_loss: float = -0.03,
-    take_profit: float = 0.08,
+    stop_loss: float = -0.005,
+    take_profit: float = 0.10,
     holding_period: int = 20,
     settlement_delay: int = 2,
     round_trip_cost: float = 0.0,
@@ -292,8 +280,8 @@ def track_signals(
     for sig in signals:
         ticker = sig.get("ticker", "")
         signal_date = str(sig.get("signal_date", ""))[:10]
-        sl = float(sig.get("stop_loss", -0.03))
-        tp = float(sig.get("take_profit", 0.08))
+        sl = float(sig.get("stop_loss", -0.005))
+        tp = float(sig.get("take_profit", 0.10))
         cohort = by_date[signal_date]
         supplied_weight = sig.get("weight")
         if supplied_weight is not None:

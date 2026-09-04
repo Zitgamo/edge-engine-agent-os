@@ -59,6 +59,11 @@ CREATE TABLE IF NOT EXISTS strategy_performance (
     ticker TEXT NOT NULL,
     rank INTEGER,
     score REAL,
+    stop_loss REAL,
+    take_profit REAL,
+    atr REAL,
+    market_breadth_20d REAL,
+    strategy_version TEXT,
     actual_excess_return_5d REAL,
     actual_excess_return_20d REAL,
     actual_outperform INTEGER,
@@ -77,6 +82,11 @@ ALTER TABLE actuals ADD COLUMN IF NOT EXISTS entry_price REAL;
 ALTER TABLE actuals ADD COLUMN IF NOT EXISTS exit_price REAL;
 ALTER TABLE actuals ADD COLUMN IF NOT EXISTS execution_status TEXT;
 ALTER TABLE strategy_performance ADD COLUMN IF NOT EXISTS actual_excess_return_20d REAL;
+ALTER TABLE strategy_performance ADD COLUMN IF NOT EXISTS stop_loss REAL;
+ALTER TABLE strategy_performance ADD COLUMN IF NOT EXISTS take_profit REAL;
+ALTER TABLE strategy_performance ADD COLUMN IF NOT EXISTS atr REAL;
+ALTER TABLE strategy_performance ADD COLUMN IF NOT EXISTS market_breadth_20d REAL;
+ALTER TABLE strategy_performance ADD COLUMN IF NOT EXISTS strategy_version TEXT;
 ALTER TABLE pipeline_runs ADD COLUMN IF NOT EXISTS run_key TEXT;
 ALTER TABLE pipeline_runs ADD COLUMN IF NOT EXISTS execution_evaluation_dates REAL;
 ALTER TABLE pipeline_runs ADD COLUMN IF NOT EXISTS execution_top3_win_rate REAL;

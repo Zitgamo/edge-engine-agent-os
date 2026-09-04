@@ -3,6 +3,7 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
+import src.data.collector as collector_module
 from src.config import Config
 from src.data.collector import OHLCVCollector
 from src.data.universe import filter_quality, get_ticker_universe
@@ -43,6 +44,59 @@ class TestCollector:
         config.data_source = "typo"
         with pytest.raises(ValueError, match="Unsupported DATA_SOURCE"):
             OHLCVCollector(config).fetch("VNM", days=3)
+
+    def test_kbs_payload_is_normalized_and_bad_rows_are_quarantined(
+        self,
+        monkeypatch,
+    ) -> None:
+        class FakeResponse:
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self) -> dict:
+                return {
+                    "symbol": "ACB",
+                    "data_day": [
+                        {
+                            "t": "2026-01-02 07:00",
+                            "o": "100",
+                            "h": "105",
+                            "l": "99",
+                            "c": "102",
+                            "v": "1000",
+                        },
+                        {
+                            "t": "2026-01-05 07:00",
+                            "o": "100",
+                            "h": "90",
+                            "l": "95",
+                            "c": "95",
+                            "v": "1000",
+                        },
+                    ],
+                }
+
+        requested: dict[str, object] = {}
+
+        def fake_get(url, **kwargs):
+            requested["url"] = url
+            requested.update(kwargs)
+            return FakeResponse()
+
+        monkeypatch.setattr(collector_module.requests, "get", fake_get)
+        config = Config()
+        config.data_source = "kbs"
+        config.kbs_base_url = "https://example.test/investment"
+        collector = OHLCVCollector(config)
+
+        result = collector.fetch("ACB", days=30)
+
+        assert len(result) == 1
+        assert result.iloc[0]["ticker"] == "ACB"
+        assert result.iloc[0]["date"] == pd.Timestamp("2026-01-02")
+        assert result.iloc[0]["volume"] == 1000
+        assert "/stocks/ACB/data_day?sdate=" in str(requested["url"])
+        assert requested["timeout"] == config.kbs_timeout_seconds
 
 
 class TestValidator:

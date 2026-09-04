@@ -53,3 +53,35 @@ def test_strategy_attribution_returns_empty_schema_for_no_realized_rows() -> Non
     assert result.empty
     assert "strategy_name" in result.columns
     assert "trade_count" in result.columns
+
+
+def test_strategy_attribution_can_separate_strategy_versions_into_cohorts() -> None:
+    frame = pd.DataFrame([
+        {
+            "strategy_name": "paper",
+            "strategy_version": "paper_v1_fixed",
+            "signal_date": "2026-01-01",
+            "ticker": "AAA",
+            "actual_excess_return_20d": 0.02,
+        },
+        {
+            "strategy_name": "paper",
+            "strategy_version": "paper_v2_ticker_exit",
+            "signal_date": "2026-01-01",
+            "ticker": "AAA",
+            "actual_excess_return_20d": -0.01,
+        },
+    ])
+
+    result = summarize_strategy_attribution(frame, include_version=True)
+
+    assert set(result["strategy_version"]) == {
+        "paper_v1_fixed",
+        "paper_v2_ticker_exit",
+    }
+    assert result.set_index("strategy_version").loc[
+        "paper_v1_fixed", "trade_count"
+    ] == 1
+    assert result.set_index("strategy_version").loc[
+        "paper_v2_ticker_exit", "avg_return_net"
+    ] == -0.01

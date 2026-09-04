@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 
 from src.backtest import _load_backtest_prices, _price_metadata
+from src.execution import barrier_exit
 
 
 def _numeric_array(frame: pd.DataFrame, column: str, fallback: str) -> np.ndarray:
@@ -41,8 +42,6 @@ def _execution_outcome_map(
         stock_dates, stock_date_to_idx = _price_metadata(stock)
         close = _numeric_array(stock, "close", "close")
         open_prices = _numeric_array(stock, "open", "close")
-        high = _numeric_array(stock, "high", "close")
-        low = _numeric_array(stock, "low", "close")
 
         for signal_date, signal_idx in stock_date_to_idx.items():
             entry_idx = signal_idx + 1
@@ -61,13 +60,15 @@ def _execution_outcome_map(
                 held = held_idx - entry_idx + 1
                 if held <= 2:
                     continue
-                if stop_loss < 0 and low[held_idx] <= entry * (1 + stop_loss):
+                barrier = barrier_exit(
+                    entry,
+                    stock.iloc[held_idx],
+                    stop_loss,
+                    take_profit,
+                )
+                if barrier is not None:
                     exit_idx = held_idx
-                    exit_price = entry * (1 + stop_loss)
-                    break
-                if take_profit > 0 and high[held_idx] >= entry * (1 + take_profit):
-                    exit_idx = held_idx
-                    exit_price = entry * (1 + take_profit)
+                    exit_price = barrier[0]
                     break
                 exit_idx = held_idx
                 exit_price = close[held_idx]
@@ -97,8 +98,8 @@ def add_execution_labels(
     df: pd.DataFrame,
     *,
     raw_data_dir: str | Path = "data/raw",
-    stop_loss: float = -0.03,
-    take_profit: float = 0.08,
+    stop_loss: float = -0.005,
+    take_profit: float = 0.10,
     holding_period: int = 20,
     round_trip_cost: float = 0.0,
 ) -> pd.DataFrame:

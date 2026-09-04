@@ -19,7 +19,7 @@ FEATURE_COLS = [
     "vndusd",
 ]
 
-MODEL_VERSION = "xgboost_technical_v5_execution_primary"
+MODEL_VERSION = "xgboost_technical_v7_execution_max_sl05_tp10"
 
 TARGET_COL = "outperform_5d"
 

@@ -1,0 +1,65 @@
+name: Weekly Ticker Exit Research
+
+on:
+  schedule:
+    # GitHub cron is UTC: 09:37 Vietnam time every Sunday.
+    - cron: "37 2 * * 0"
+  workflow_dispatch:
+    inputs:
+      universe:
+        description: "Research universe"
+        required: false
+        default: "all"
+        type: choice
+        options:
+          - all
+          - vn30
+
+permissions:
+  contents: read
+
+concurrency:
+  group: weekly-ticker-exit-research
+  cancel-in-progress: false
+
+jobs:
+  research:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      RESEARCH_UNIVERSE: ${{ github.event.inputs.universe || 'all' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+      - name: Restore research OHLCV cache
+        uses: actions/cache@v4
+        with:
+          path: data/research_kbs_5y/raw
+          key: ticker-exit-raw-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: |
+            ticker-exit-raw-${{ runner.os }}-
+      - name: Refresh KBS research cache
+        run: python -m src.cli research-refresh data/research_kbs_5y --universe "$RESEARCH_UNIVERSE"
+      - name: Rebuild point-in-time research dataset
+        run: python -m src.cli research-build data/research_kbs_5y
+      - name: Fit rolling per-ticker exits
+        run: python -m src.cli research-ticker-exits data/research_kbs_5y --universe "$RESEARCH_UNIVERSE" --folds 3
+      - name: Diagnose bottom-to-now TP/SL and holding mode
+        run: python -m src.cli research-bottom-now data/research_kbs_5y --universe "$RESEARCH_UNIVERSE"
+      - name: Upload auditable exit profile
+        uses: actions/upload-artifact@v4
+        with:
+          name: ticker-exit-research-${{ github.run_id }}
+          path: |
+            data/research_kbs_5y/download_summary.json
+            data/research_kbs_5y/research_results/ticker_exit_profiles.json
+            data/research_kbs_5y/research_results/ticker_exit_profile_table.csv
+            data/research_kbs_5y/research_results/ticker_exit_walk_forward_folds.csv
+            data/research_kbs_5y/research_results/ticker_exit_holdout_summary.csv
+            data/research_kbs_5y/research_results/bottom_to_now_analysis.csv
+            data/research_kbs_5y/research_results/bottom_to_now_summary.json
+          if-no-files-found: warn

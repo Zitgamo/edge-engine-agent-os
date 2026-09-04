@@ -151,3 +151,47 @@ def test_actuals_refreshes_persisted_prices_without_full_horizon(
     assert len(result) == 1
     assert set(calls) == {"AAA", "VNINDEX"}
     assert result.loc[0, "realized_date"] == "2026-01-29"
+
+
+def test_actuals_merges_recent_refresh_with_persisted_early_exit_data(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    persisted_dates = pd.date_range("2026-01-01", periods=4, freq="B")
+    fresh_dates = pd.date_range("2026-01-12", periods=2, freq="B")
+    persisted_prices = {
+        ticker: _prices(ticker, persisted_dates, base)
+        for ticker, base in (("AAA", 100), ("VNINDEX", 1_000))
+    }
+    fresh_prices = {
+        ticker: _prices(ticker, fresh_dates, base)
+        for ticker, base in (("AAA", 100), ("VNINDEX", 1_000))
+    }
+    for ticker, frame in persisted_prices.items():
+        frame.to_parquet(tmp_path / f"{ticker}_raw.parquet")
+
+    class FakeCollector:
+        def __init__(self, config):
+            self.config = config
+
+        def fetch(self, ticker: str, days: int):
+            return fresh_prices[ticker]
+
+    monkeypatch.setattr(actuals, "OHLCVCollector", FakeCollector)
+    config = Config()
+    config.raw_data_dir = tmp_path
+
+    result = actuals.calculate_actuals(
+        pd.DataFrame([{
+            "signal_date": "2026-01-01",
+            "ticker": "AAA",
+            "stop_loss": 0.0,
+            "take_profit": 0.02,
+        }]),
+        holding_period=20,
+        config=config,
+    )
+
+    assert len(result) == 1
+    assert result.loc[0, "status"] == "HIT_TP"
+    assert result.loc[0, "realized_date"] == "2026-01-06"

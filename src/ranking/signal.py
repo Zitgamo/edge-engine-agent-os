@@ -6,8 +6,8 @@ import pandas as pd
 
 log = logging.getLogger(__name__)
 
-SL_DEFAULT = -0.03
-TP_DEFAULT = 0.08
+SL_DEFAULT = -0.005
+TP_DEFAULT = 0.10
 
 
 class SignalGenerator:

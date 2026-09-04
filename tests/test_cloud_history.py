@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pandas as pd
 
 from src import database, supabase_client
@@ -128,3 +130,44 @@ def test_strategy_backfill_uses_supplied_config(monkeypatch, tmp_path) -> None:
 
     assert manager.backfill_strategy_actuals(config=config) == 0
     assert captured["config"] is config
+
+
+def test_strategy_backfill_resolves_missing_production_exits(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setattr(database, "DB_PATH", tmp_path / "engine.db")
+    manager = StrategyManager(include_research=False)
+    conn = database.get_conn()
+    conn.execute(
+        """INSERT INTO strategy_performance
+           (strategy_name, signal_date, ticker, rank, score)
+           VALUES ('outperform', '2026-01-01', 'AAA', 1, 0.9)"""
+    )
+    conn.commit()
+    conn.close()
+
+    config = SimpleNamespace(stop_loss=-0.03, take_profit=0.08)
+
+    def calculate(signals, holding_period, config=None):
+        assert signals.loc[0, "stop_loss"] == -0.03
+        assert signals.loc[0, "take_profit"] == 0.08
+        return pd.DataFrame([{
+            "signal_date": "2026-01-01",
+            "ticker": "AAA",
+            "stop_loss": -0.03,
+            "take_profit": 0.08,
+            "actual_excess_return": 0.04,
+            "actual_outperform": 1,
+        }])
+
+    monkeypatch.setattr("src.actuals.calculate_actuals", calculate)
+
+    assert manager.backfill_strategy_actuals(config=config) == 1
+    conn = database.get_conn()
+    row = conn.execute(
+        "SELECT actual_excess_return_20d, actual_outperform, realized "
+        "FROM strategy_performance WHERE ticker = 'AAA'"
+    ).fetchone()
+    conn.close()
+    assert row == (0.04, 1, 1)

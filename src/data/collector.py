@@ -5,6 +5,7 @@ import time
 from datetime import UTC, datetime, timedelta
 
 import pandas as pd
+import requests
 import yfinance as yf
 
 from src.config import Config
@@ -18,8 +19,10 @@ class OHLCVCollector:
     def __init__(self, config: Config | None = None) -> None:
         self.config = config or Config()
         self.last_benchmark_source: str | None = None
+        self.last_invalid_count: int = 0
 
     def fetch(self, ticker: str, days: int = 365) -> pd.DataFrame:
+        self.last_invalid_count = 0
         source = str(self.config.data_source).strip().lower()
         if source == "mock":
             if ticker == "VNINDEX":
@@ -27,8 +30,11 @@ class OHLCVCollector:
             return self._mock_data(ticker, days)
         if source == "yfinance":
             return self._fetch_yfinance(ticker, days)
+        if source in {"kbs", "kbs_public"}:
+            return self._fetch_kbs(ticker, days)
         raise ValueError(
-            f"Unsupported DATA_SOURCE={self.config.data_source!r}; expected 'yfinance' or 'mock'"
+            f"Unsupported DATA_SOURCE={self.config.data_source!r}; "
+            "expected 'yfinance', 'kbs', or 'mock'"
         )
 
     def _normalize_date(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -74,6 +80,81 @@ class OHLCVCollector:
         df["ticker"] = ticker
         df["volume"] = df["volume"].fillna(0).astype(int)
         return df[["ticker", "date", "open", "high", "low", "close", "volume"]].sort_values("date")
+
+    def _fetch_kbs(self, ticker: str, days: int = 365) -> pd.DataFrame:
+        """Fetch daily OHLCV from KBS's public end-of-day endpoint."""
+        end_date = now_vn().date()
+        start_date = end_date - timedelta(days=max(1, int(days)))
+        base_url = str(self.config.kbs_base_url).rstrip("/")
+        ticker = str(ticker).upper().strip()
+        if ticker == "VNINDEX":
+            resource = f"index/{ticker}"
+            self.last_benchmark_source = "kbs"
+        else:
+            resource = f"stocks/{ticker}"
+        url = (
+            f"{base_url}/{resource}/data_day"
+            f"?sdate={start_date:%d-%m-%Y}&edate={end_date:%d-%m-%Y}"
+        )
+        headers = {
+            "Accept": "application/json, text/plain, */*",
+            "Referer": "https://www.kbsec.com.vn/",
+            "User-Agent": "Mozilla/5.0",
+        }
+        log.info("Fetching %s from KBS (%d days)", ticker, days)
+        try:
+            response = requests.get(
+                url,
+                headers=headers,
+                timeout=float(self.config.kbs_timeout_seconds),
+            )
+            response.raise_for_status()
+            payload = response.json()
+        except (requests.RequestException, ValueError) as exc:
+            raise RuntimeError(f"KBS request failed for {ticker}: {exc}") from exc
+
+        rows = payload.get("data_day", []) if isinstance(payload, dict) else []
+        if not isinstance(rows, list) or not rows:
+            log.warning("No KBS data for %s", ticker)
+            return pd.DataFrame()
+
+        frame = pd.DataFrame(rows).rename(columns={
+            "t": "date",
+            "o": "open",
+            "h": "high",
+            "l": "low",
+            "c": "close",
+            "v": "volume",
+        })
+        required = ["date", "open", "high", "low", "close", "volume"]
+        missing = [column for column in required if column not in frame.columns]
+        if missing:
+            raise RuntimeError(f"KBS response for {ticker} is missing columns: {missing}")
+
+        frame["date"] = pd.to_datetime(frame["date"], errors="coerce")
+        for column in ["open", "high", "low", "close", "volume"]:
+            frame[column] = pd.to_numeric(frame[column], errors="coerce")
+        invalid = (
+            frame["date"].isna()
+            | frame[["open", "high", "low", "close", "volume"]].isna().any(axis=1)
+            | (frame[["open", "high", "low", "close"]] <= 0).any(axis=1)
+            | (frame["volume"] < 0)
+            | (frame["high"] < frame["low"])
+            | (frame["high"] < frame[["open", "close"]].max(axis=1))
+            | (frame["low"] > frame[["open", "close"]].min(axis=1))
+        )
+        invalid_count = int(invalid.sum())
+        self.last_invalid_count = invalid_count
+        if invalid_count:
+            log.warning("Dropping %d invalid KBS OHLCV rows for %s", invalid_count, ticker)
+            frame = frame.loc[~invalid].copy()
+        if frame.empty:
+            return pd.DataFrame()
+
+        frame["ticker"] = ticker
+        frame = self._normalize_date(frame)
+        frame["volume"] = frame["volume"].round().astype("int64")
+        return frame[["ticker", "date", "open", "high", "low", "close", "volume"]]
 
     def _fetch_vnstock_index(self, days: int = 365) -> pd.DataFrame:
         """Fetch VNINDEX from VCI when Yahoo has no historical index series."""

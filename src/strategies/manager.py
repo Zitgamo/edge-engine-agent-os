@@ -71,6 +71,11 @@ class StrategyManager:
                 ticker TEXT NOT NULL,
                 rank INTEGER NOT NULL,
                 score REAL NOT NULL,
+                stop_loss REAL,
+                take_profit REAL,
+                atr REAL,
+                market_breadth_20d REAL,
+                strategy_version TEXT,
                 actual_excess_return_5d REAL,
                 actual_excess_return_20d REAL,
                 actual_outperform INTEGER,
@@ -81,6 +86,14 @@ class StrategyManager:
             CREATE INDEX IF NOT EXISTS idx_strat_perf_date ON strategy_performance(signal_date);
         """)
         _ensure_column(conn, "strategy_performance", "actual_excess_return_20d", "REAL")
+        for column, definition in [
+            ("stop_loss", "REAL"),
+            ("take_profit", "REAL"),
+            ("atr", "REAL"),
+            ("market_breadth_20d", "REAL"),
+            ("strategy_version", "TEXT"),
+        ]:
+            _ensure_column(conn, "strategy_performance", column, definition)
         conn.execute(
             """UPDATE strategy_performance
                SET actual_excess_return_20d = actual_excess_return_5d
@@ -109,22 +122,45 @@ class StrategyManager:
         rankings: dict[str, pd.DataFrame],
         n: int = 5,
         signal_date: str | None = None,
+        config: Config | None = None,
     ) -> None:
         conn = get_conn()
         sig_date = signal_date or today_vn().isoformat()
-        conn.execute("DELETE FROM strategy_performance WHERE signal_date = ?", (sig_date,))
+        strategy_names = sorted(str(name) for name in rankings if str(name).strip())
+        if strategy_names:
+            placeholders = ", ".join("?" for _ in strategy_names)
+            conn.execute(
+                f"DELETE FROM strategy_performance "
+                f"WHERE signal_date = ? AND strategy_name IN ({placeholders})",
+                (sig_date, *strategy_names),
+            )
+        execution_config = config or Config()
         rows = []
         for strat_name, ranking in rankings.items():
-            top = ranking.head(n)
+            from src.actuals import resolve_execution_exits
+
+            top = resolve_execution_exits(ranking.head(n), execution_config)
             for _, r in top.iterrows():
                 rows.append((
                     strat_name, sig_date, r["ticker"], int(r["rank"]),
                     float(r["score"]),
+                    float(r["stop_loss"]) if pd.notna(r.get("stop_loss")) else None,
+                    float(r["take_profit"]) if pd.notna(r.get("take_profit")) else None,
+                    float(r["atr"]) if pd.notna(r.get("atr")) else None,
+                    (
+                        float(r["market_breadth_20d"])
+                        if pd.notna(r.get("market_breadth_20d"))
+                        else None
+                    ),
+                    str(r["strategy_version"])
+                    if pd.notna(r.get("strategy_version"))
+                    else None,
                 ))
         conn.executemany(
             """INSERT INTO strategy_performance
-               (strategy_name, signal_date, ticker, rank, score)
-               VALUES (?, ?, ?, ?, ?)""",
+               (strategy_name, signal_date, ticker, rank, score,
+                stop_loss, take_profit, atr, market_breadth_20d, strategy_version)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             rows,
         )
         conn.commit()
@@ -281,7 +317,7 @@ class StrategyManager:
     def backfill_strategy_actuals(self, config: Config | None = None) -> int:
         conn = get_conn()
         pending = pd.read_sql_query(
-            """SELECT sp.id, sp.signal_date, sp.ticker
+            """SELECT sp.id, sp.signal_date, sp.ticker, sp.stop_loss, sp.take_profit
                FROM strategy_performance sp
                WHERE sp.realized = 0""",
             conn,
@@ -295,24 +331,60 @@ class StrategyManager:
         # feature label computed from signal-day closes.  Calculate each
         # signal once, then apply the same realized result to every strategy
         # that selected it.
-        from src.actuals import calculate_actuals
+        from src.actuals import calculate_actuals, resolve_execution_exits
 
-        unique_signals = pending[["signal_date", "ticker"]].drop_duplicates()
+        execution_config = config or Config()
+        pending = pending.copy()
+        pending[["stop_loss", "take_profit"]] = resolve_execution_exits(
+            pending[["stop_loss", "take_profit"]],
+            execution_config,
+        )[["stop_loss", "take_profit"]]
+
+        unique_signals = pending[
+            ["signal_date", "ticker", "stop_loss", "take_profit"]
+        ].drop_duplicates()
         actuals = calculate_actuals(
             unique_signals,
             holding_period=self.holding_period,
-            config=config,
+            config=execution_config,
         )
         if actuals.empty:
             return 0
         actual_map = {
+            (
+                str(row["signal_date"])[:10],
+                str(row["ticker"]),
+                round(float(row["stop_loss"]), 12)
+                if pd.notna(row.get("stop_loss"))
+                else None,
+                round(float(row["take_profit"]), 12)
+                if pd.notna(row.get("take_profit"))
+                else None,
+            ): row
+            for row in actuals.to_dict("records")
+        }
+        fallback_actual_map = {
             (str(row["signal_date"])[:10], str(row["ticker"])): row
             for row in actuals.to_dict("records")
         }
 
         updates = []
         for row in pending.to_dict("records"):
-            actual = actual_map.get((str(row["signal_date"])[:10], str(row["ticker"])))
+            key = (
+                str(row["signal_date"])[:10],
+                str(row["ticker"]),
+                round(float(row["stop_loss"]), 12)
+                if pd.notna(row.get("stop_loss"))
+                else None,
+                round(float(row["take_profit"]), 12)
+                if pd.notna(row.get("take_profit"))
+                else None,
+            )
+            actual = actual_map.get(key)
+            if actual is None:
+                actual = fallback_actual_map.get(
+                    (str(row["signal_date"])[:10], str(row["ticker"]))
+                )
             if actual is None:
                 continue
             updates.append((

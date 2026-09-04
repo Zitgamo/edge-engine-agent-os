@@ -47,6 +47,31 @@ def add_execution_excess_column(
     return result
 
 
+def resolve_execution_exits(
+    signals: pd.DataFrame,
+    config: Config | None = None,
+) -> pd.DataFrame:
+    """Materialize configured exits for rows that do not carry per-trade exits.
+
+    Production strategy rankings historically omitted ``stop_loss`` and
+    ``take_profit`` while paper candidates persist them explicitly.  Keeping
+    the fallback resolution in one place makes both kinds of rows use the
+    same execution parameters before outcome keys are built.
+    """
+    result = signals.copy()
+    runtime_config = config or Config()
+    defaults = {
+        "stop_loss": float(getattr(runtime_config, "stop_loss", Config.stop_loss)),
+        "take_profit": float(getattr(runtime_config, "take_profit", Config.take_profit)),
+    }
+    for column, fallback in defaults.items():
+        if column not in result.columns:
+            result[column] = fallback
+            continue
+        result[column] = pd.to_numeric(result[column], errors="coerce").fillna(fallback)
+    return result
+
+
 def _normalise_prices(df: pd.DataFrame) -> pd.DataFrame:
     """Return sorted, de-duplicated prices with normalized dates."""
     if df.empty or "date" not in df.columns or "close" not in df.columns:
@@ -114,8 +139,17 @@ def _load_prices(
         log.warning("Cannot refresh prices for %s: %s", ticker, exc)
         fresh = pd.DataFrame()
     if not fresh.empty:
-        cache[ticker] = fresh
-        return fresh
+        # A refresh can be non-empty but still contain only recent rows.  Do
+        # not discard persisted signal-day/early-exit data in that case;
+        # fresh values win on overlapping dates while the historical window
+        # remains available for the calculation.
+        combined = (
+            fresh
+            if persisted.empty
+            else _normalise_prices(pd.concat([persisted, fresh], ignore_index=True))
+        )
+        cache[ticker] = combined
+        return combined
 
     # A transient data-source outage should not discard a persisted early
     # exit that is still independently computable.
@@ -248,6 +282,8 @@ def calculate_actuals(
             outcome = {
                 "signal_date": signal_date,
                 "ticker": ticker,
+                "stop_loss": stop_loss,
+                "take_profit": take_profit,
                 "actual_stock_return": stock_return,
                 "benchmark_return": benchmark_return,
                 "gross_stock_return": float(simulation.get("gross_pnl", stock_return)),

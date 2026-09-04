@@ -109,6 +109,11 @@ def init_db() -> None:
             ticker TEXT NOT NULL,
             rank INTEGER NOT NULL,
             score REAL NOT NULL,
+            stop_loss REAL,
+            take_profit REAL,
+            atr REAL,
+            market_breadth_20d REAL,
+            strategy_version TEXT,
             actual_excess_return_5d REAL,
             actual_excess_return_20d REAL,
             actual_outperform INTEGER,
@@ -135,6 +140,14 @@ def init_db() -> None:
     for column in EXECUTION_METRIC_COLUMNS:
         _ensure_column(conn, "pipeline_runs", column, "REAL")
     _ensure_column(conn, "strategy_performance", "actual_excess_return_20d", "REAL")
+    for column, definition in [
+        ("stop_loss", "REAL"),
+        ("take_profit", "REAL"),
+        ("atr", "REAL"),
+        ("market_breadth_20d", "REAL"),
+        ("strategy_version", "TEXT"),
+    ]:
+        _ensure_column(conn, "strategy_performance", column, definition)
     # The legacy column was populated with executable T+20 outcomes despite
     # its misleading T+5 name. Preserve those outcomes under the canonical
     # column during the local schema migration.
@@ -170,7 +183,7 @@ def init_db() -> None:
 
 def save_signals(
     signals: pd.DataFrame,
-    model_version: str = "xgboost_technical_v5_execution_primary",
+    model_version: str = "xgboost_technical_v7_execution_max_sl05_tp10",
 ) -> int:
     init_db()
     conn = get_conn()
@@ -208,23 +221,217 @@ def save_signals(
     return count
 
 
-def clear_publication_for_date(signal_date: str | date) -> dict[str, int]:
-    """Remove all publishable rows for a date before recording no-trade.
+def save_paper_strategy_signals(signals: pd.DataFrame) -> int:
+    """Save one paper-candidate snapshot without touching other strategies."""
+    init_db()
+    if signals.empty:
+        return 0
+    required = {"strategy_name", "signal_date", "ticker", "rank", "score"}
+    missing = sorted(required - set(signals.columns))
+    if missing:
+        raise ValueError(f"Paper signals missing columns: {missing}")
+
+    conn = get_conn()
+    rows = []
+    for _, row in signals.iterrows():
+        rows.append((
+            str(row["strategy_name"]),
+            str(row["signal_date"])[:10],
+            str(row["ticker"]),
+            int(row["rank"]),
+            float(row["score"]),
+            float(row["stop_loss"]) if pd.notna(row.get("stop_loss")) else None,
+            float(row["take_profit"]) if pd.notna(row.get("take_profit")) else None,
+            float(row["atr"]) if pd.notna(row.get("atr")) else None,
+            (
+                float(row["market_breadth_20d"])
+                if pd.notna(row.get("market_breadth_20d"))
+                else None
+            ),
+            str(row["strategy_version"])
+            if pd.notna(row.get("strategy_version"))
+            else None,
+        ))
+    for strategy_name, signal_date, *_ in rows:
+        conn.execute(
+            "DELETE FROM strategy_performance WHERE strategy_name = ? AND signal_date = ?",
+            (strategy_name, signal_date),
+        )
+    conn.executemany(
+        """INSERT INTO strategy_performance
+           (strategy_name, signal_date, ticker, rank, score,
+            stop_loss, take_profit, atr, market_breadth_20d, strategy_version,
+            actual_excess_return_5d, actual_excess_return_20d,
+            actual_outperform, realized)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, 0)""",
+        rows,
+    )
+    conn.commit()
+    conn.close()
+    log.info(
+        "Saved %d paper strategy signals for %s",
+        len(rows),
+        sorted({row[1] for row in rows}),
+    )
+    return len(rows)
+
+
+def _paper_actual_key(
+    signal_date: object,
+    ticker: object,
+    stop_loss: object = None,
+    take_profit: object = None,
+) -> tuple[str, str, float | None, float | None]:
+    def normalize(value: object) -> float | None:
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            return None
+        return round(value, 12)
+
+    return (
+        str(signal_date)[:10],
+        str(ticker),
+        normalize(stop_loss),
+        normalize(take_profit),
+    )
+
+
+def backfill_strategy_performance_actuals(
+    *,
+    strategy_name: str | None = None,
+    holding_period: int = 20,
+    config: Config | None = None,
+) -> int:
+    """Backfill executable outcomes for independent strategy selections."""
+    init_db()
+    conn = get_conn()
+    query = (
+        "SELECT id, strategy_name, signal_date, ticker, stop_loss, take_profit "
+        "FROM strategy_performance WHERE realized = 0"
+    )
+    params: list[object] = []
+    if strategy_name:
+        query += " AND strategy_name = ?"
+        params.append(strategy_name)
+    pending = pd.read_sql_query(query, conn, params=params)
+    conn.close()
+    if pending.empty:
+        return 0
+
+    from src.actuals import calculate_actuals, resolve_execution_exits
+    from src.config import Config
+
+    execution_config = config or Config()
+    pending = pending.copy()
+    pending[["stop_loss", "take_profit"]] = resolve_execution_exits(
+        pending[["stop_loss", "take_profit"]],
+        execution_config,
+    )[["stop_loss", "take_profit"]]
+    calculated = calculate_actuals(
+        pending[["signal_date", "ticker", "stop_loss", "take_profit"]],
+        holding_period=holding_period,
+        config=execution_config,
+    )
+    if calculated.empty:
+        return 0
+
+    exact_map = {
+        _paper_actual_key(
+            row.get("signal_date"),
+            row.get("ticker"),
+            row.get("stop_loss"),
+            row.get("take_profit"),
+        ): row
+        for row in calculated.to_dict("records")
+    }
+    fallback_map = {
+        _paper_actual_key(row.get("signal_date"), row.get("ticker")): row
+        for row in calculated.to_dict("records")
+    }
+    fallback_date_ticker_map = {
+        (str(row.get("signal_date", ""))[:10], str(row.get("ticker", ""))): row
+        for row in calculated.to_dict("records")
+    }
+    updates = []
+    for row in pending.to_dict("records"):
+        key = _paper_actual_key(
+            row["signal_date"],
+            row["ticker"],
+            row.get("stop_loss"),
+            row.get("take_profit"),
+        )
+        actual = exact_map.get(key) or fallback_map.get(
+            _paper_actual_key(row["signal_date"], row["ticker"])
+        )
+        if actual is None:
+            actual = fallback_date_ticker_map.get(
+                (str(row["signal_date"])[:10], str(row["ticker"]))
+            )
+        if actual is None:
+            continue
+        updates.append((
+            float(actual["actual_excess_return"]),
+            float(actual["actual_excess_return"]),
+            int(actual["actual_outperform"]),
+            int(row["id"]),
+        ))
+    if not updates:
+        return 0
+    conn = get_conn()
+    conn.executemany(
+        """UPDATE strategy_performance
+           SET actual_excess_return_5d = ?, actual_excess_return_20d = ?,
+               actual_outperform = ?, realized = 1
+           WHERE id = ?""",
+        updates,
+    )
+    conn.commit()
+    conn.close()
+    log.info(
+        "Backfilled %d independent strategy outcomes (T+%d)",
+        len(updates),
+        holding_period,
+    )
+    return len(updates)
+
+
+def clear_publication_for_date(
+    signal_date: str | date,
+    *,
+    preserve_strategy_names: set[str] | None = None,
+) -> dict[str, int]:
+    """Remove production publication rows without deleting paper cohorts.
 
     Signals, realized actuals and strategy rows share the same publication
     date.  Clearing them together makes a forced rerun idempotent: an empty
     ranking cannot leave yesterday's same-date rows visible locally or ready
     to be uploaded again.
     """
+    from src.config import Config
+
     init_db()
     date_key = str(signal_date)[:10]
+    preserved = (
+        set(preserve_strategy_names)
+        if preserve_strategy_names is not None
+        else Config().paper_strategy_names()
+    )
     conn = get_conn()
     counts: dict[str, int] = {}
     for table in ("signals", "actuals", "strategy_performance"):
-        cursor = conn.execute(
-            f"DELETE FROM {table} WHERE signal_date = ?",
-            (date_key,),
-        )
+        if table == "strategy_performance" and preserved:
+            placeholders = ", ".join("?" for _ in preserved)
+            cursor = conn.execute(
+                f"DELETE FROM {table} "
+                f"WHERE signal_date = ? AND strategy_name NOT IN ({placeholders})",
+                (date_key, *sorted(preserved)),
+            )
+        else:
+            cursor = conn.execute(
+                f"DELETE FROM {table} WHERE signal_date = ?",
+                (date_key,),
+            )
         counts[table] = max(cursor.rowcount, 0)
     conn.commit()
     conn.close()
