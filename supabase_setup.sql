@@ -88,6 +88,7 @@ ALTER TABLE strategy_performance ADD COLUMN IF NOT EXISTS atr REAL;
 ALTER TABLE strategy_performance ADD COLUMN IF NOT EXISTS market_breadth_20d REAL;
 ALTER TABLE strategy_performance ADD COLUMN IF NOT EXISTS strategy_version TEXT;
 ALTER TABLE pipeline_runs ADD COLUMN IF NOT EXISTS run_key TEXT;
+ALTER TABLE pipeline_runs ADD COLUMN IF NOT EXISTS diagnostics JSONB;
 ALTER TABLE pipeline_runs ADD COLUMN IF NOT EXISTS execution_evaluation_dates REAL;
 ALTER TABLE pipeline_runs ADD COLUMN IF NOT EXISTS execution_top3_win_rate REAL;
 ALTER TABLE pipeline_runs ADD COLUMN IF NOT EXISTS execution_top3_excess_return REAL;

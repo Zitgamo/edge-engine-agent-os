@@ -193,7 +193,7 @@ def test_publish_no_trade_clears_local_and_cloud_publications(monkeypatch) -> No
     monkeypatch.setattr(
         pipeline,
         "save_pipeline_run",
-        lambda metrics, status, run_key: events.append(
+        lambda metrics, status, run_key, diagnostics=None: events.append(
             ("run", metrics, status, run_key)
         ),
     )

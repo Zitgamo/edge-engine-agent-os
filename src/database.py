@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import json
 import sqlite3
 from datetime import date
 from pathlib import Path
@@ -137,6 +138,7 @@ def init_db() -> None:
     ]:
         _ensure_column(conn, "actuals", column, definition)
     _ensure_column(conn, "pipeline_runs", "run_key", "TEXT")
+    _ensure_column(conn, "pipeline_runs", "diagnostics", "TEXT")
     for column in EXECUTION_METRIC_COLUMNS:
         _ensure_column(conn, "pipeline_runs", column, "REAL")
     _ensure_column(conn, "strategy_performance", "actual_excess_return_20d", "REAL")
@@ -443,6 +445,7 @@ def save_pipeline_run(
     metrics: dict[str, float],
     status: str = "success",
     run_key: str | None = None,
+    diagnostics: dict | None = None,
 ) -> int:
     init_db()
     run_key = str(run_key or date.today().isoformat())
@@ -452,8 +455,8 @@ def save_pipeline_run(
              (run_key, accuracy, precision, recall, f1, roc_auc,
               execution_evaluation_dates, execution_top3_win_rate,
               execution_top3_excess_return, execution_universe_excess_return,
-              execution_top3_spread, status)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              execution_top3_spread, status, diagnostics)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(run_key) DO UPDATE SET
              accuracy = excluded.accuracy,
              precision = excluded.precision,
@@ -466,6 +469,7 @@ def save_pipeline_run(
              execution_universe_excess_return = excluded.execution_universe_excess_return,
              execution_top3_spread = excluded.execution_top3_spread,
              status = excluded.status,
+             diagnostics = excluded.diagnostics,
              run_date = CURRENT_TIMESTAMP""",
         (
             run_key,
@@ -476,6 +480,7 @@ def save_pipeline_run(
             metrics.get("roc_auc"),
             *(metrics.get(column) for column in EXECUTION_METRIC_COLUMNS),
             status,
+            json.dumps(diagnostics, ensure_ascii=False, allow_nan=False) if diagnostics is not None else None,
         ),
     )
     run_id = cur.lastrowid
