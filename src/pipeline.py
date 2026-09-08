@@ -68,9 +68,10 @@ def _publish_no_trade(
     *,
     status: str,
     config: Config | None = None,
+    diagnostics: dict | None = None,
 ) -> None:
     """Publish an explicit no-trade state without retaining stale picks."""
-    save_pipeline_run(metrics, status=status, run_key=signal_date)
+    save_pipeline_run(metrics, status=status, run_key=signal_date, diagnostics=diagnostics)
 
     # Clear the complete local publication before backfilling older dates.
     # Otherwise sync_actuals() could upload actuals for signals that the
@@ -338,6 +339,12 @@ def run_pipeline(
         return
     latest_market_date = latest_benchmark_date.date()
     run_key = latest_market_date.isoformat()
+    diagnostics = {
+        "version": 1,
+        "data_date": run_key,
+        "data_source": str(config.data_source),
+        "data_health": [],
+    }
     candidate_model_version = build_model_version(
         MODEL_VERSION,
         HOLDING_PERIOD,
@@ -379,14 +386,33 @@ def run_pipeline(
         except Exception as exc:
             log.exception("Failed to collect %s: %s", ticker, exc)
             skipped += 1
+            diagnostics["data_health"].append({"ticker": ticker, "status": "fetch_failed"})
             continue
         df = _closed_market_sessions(df, run_time)
+        from src.data.health import assess_prices
+        previous = None
+        previous_path = config.raw_data_dir / f"{ticker}_raw.parquet"
+        if previous_path.exists():
+            try:
+                previous = pd.read_parquet(previous_path)
+            except Exception:
+                log.warning("Cannot read previous cache for %s", ticker)
+        health = assess_prices(ticker, df, latest_benchmark_date, previous)
+        diagnostics["data_health"].append(health)
+        if health["status"] != "ok":
+            log.warning("Skipping %s: data health %s", ticker, health)
+            skipped += 1
+            continue
+        if health.get("large_revision"):
+            log.warning("Historical OHLC revision requires inspection: %s", health)
         df = filter_quality(df, ticker)
         if df is None:
+            health["status"] = "quality_excluded"
             skipped += 1
             continue
         errors = validator.validate(df)
         if errors:
+            health["status"] = "invalid"
             log.warning("Skipping %s due to validation errors: %s", ticker, errors)
             skipped += 1
             continue
@@ -634,6 +660,7 @@ def run_pipeline(
                 metrics,
                 status="quality_failed",
                 config=config,
+                diagnostics=diagnostics,
             )
             log.warning("No trade published because the execution quality gate failed")
             return
@@ -662,6 +689,7 @@ def run_pipeline(
                     metrics,
                     status="registry_failed",
                     config=config,
+                    diagnostics=diagnostics,
                 )
                 return
             log.info(
@@ -681,6 +709,7 @@ def run_pipeline(
                     metrics,
                     status="challenger_rejected",
                     config=config,
+                    diagnostics=diagnostics,
                 )
                 log.warning(
                     "No trade published because the challenger was rejected: %s",
@@ -721,6 +750,7 @@ def run_pipeline(
             all_metrics.get(f"T+{HOLDING_PERIOD}") or {},
             status="artifact_failed",
             config=config,
+            diagnostics=diagnostics,
         )
         return
 
@@ -745,6 +775,7 @@ def run_pipeline(
                 report_metrics,
                 status="registry_failed",
                 config=config,
+                diagnostics=diagnostics,
             )
             return
         log.info(
@@ -778,6 +809,7 @@ def run_pipeline(
     log.info("Primary ranking strategy: %s", primary_name)
     from src.filters.entry import apply_entry_filters
     ranking, filter_report = apply_entry_filters(ranking, df_all, config)
+    diagnostics["entry_filters"] = filter_report
     rankings["_ensemble"] = ranking
     log.info("Entry filter report: %s", filter_report)
     log.info("Using ensemble ranking: %s", list(ranking.head(3)["ticker"]) if not ranking.empty else "empty")
@@ -790,6 +822,7 @@ def run_pipeline(
             report_metrics,
             status="no_trade",
             config=config,
+            diagnostics=diagnostics,
         )
         log.warning("No eligible ranking passed entry gates; publishing no trade")
         return
@@ -896,7 +929,7 @@ def run_pipeline(
         "execution" if target_specs[HOLDING_PERIOD].execution else "close-to-close",
         HOLDING_PERIOD,
     )
-    save_pipeline_run(report_metrics, run_key=latest_market_date.isoformat())
+    save_pipeline_run(report_metrics, run_key=latest_market_date.isoformat(), diagnostics=diagnostics)
     log.info("=== Backfilling actuals (T+%d) ===", HOLDING_PERIOD)
     from src.database import backfill_actuals
     bf_count = backfill_actuals(

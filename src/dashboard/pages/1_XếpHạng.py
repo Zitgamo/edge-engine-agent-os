@@ -35,16 +35,42 @@ def load_data():
         return pd.DataFrame()
 
 
+@st.cache_data(ttl=120, max_entries=2)
+def load_latest_run():
+    from src.supabase_client import get_client
+    client = get_client()
+    if client:
+        rows = client.get_pipeline_summary()
+        return rows[0] if rows else {}
+    from src.database import get_conn, init_db
+    init_db()
+    conn = get_conn()
+    try:
+        rows = pd.read_sql_query("SELECT * FROM pipeline_runs ORDER BY run_date DESC LIMIT 1", conn)
+    finally:
+        conn.close()
+    return rows.iloc[0].to_dict() if not rows.empty else {}
+
+
 st.markdown(
     '<div class="main-header"><h1>Lịch Sử Tín Hiệu</h1>'
     '<div class="subtitle">Các tín hiệu quá khứ với lợi nhuận vượt trội T+20</div></div>',
     unsafe_allow_html=True,
 )
 
+if st.button("Làm mới dữ liệu"):
+    load_data.clear()
+    load_latest_run.clear()
 df = load_data()
+from src.dashboard.run_status import render_run_status
+try:
+    render_run_status(load_latest_run(), pd.to_datetime(df["signal_date"]).max() if not df.empty else None)
+except Exception:
+    log.exception("Cannot load latest pipeline status")
+    st.warning("Chưa tải được trạng thái pipeline. Thử làm mới dữ liệu.")
 
 if df.empty:
-    st.info("No signals yet. Pipeline runs daily at 8 AM VN time.")
+    st.info("Chưa có tín hiệu đã phát. Xem kết quả pipeline ở phía trên.")
     st.stop()
 
 from src.actuals import add_execution_excess_column

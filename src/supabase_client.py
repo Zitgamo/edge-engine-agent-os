@@ -407,8 +407,8 @@ class SupabaseClient:
             "SELECT run_date, accuracy, precision, recall, f1, roc_auc, "
             "execution_evaluation_dates, execution_top3_win_rate, "
             "execution_top3_excess_return, execution_universe_excess_return, "
-            "execution_top3_spread, status, run_key "
-            "FROM pipeline_runs ORDER BY id DESC LIMIT 1"
+            "execution_top3_spread, status, run_key, diagnostics "
+            "FROM pipeline_runs ORDER BY run_date DESC, id DESC LIMIT 1"
         ).fetchall()
         conn.close()
         if not rows:
@@ -441,6 +441,11 @@ class SupabaseClient:
             if execution_available[column]:
                 value = row[offset]
                 payload[column] = float(value) if value is not None else None
+        if self._remote_column_available("pipeline_runs", "diagnostics"):
+            import json
+            payload["diagnostics"] = json.loads(row[13]) if row[13] else None
+        elif row[13]:
+            log.warning("Cloud pipeline_runs lacks diagnostics; apply the run diagnostics migration")
         data = [
             payload,
         ]

@@ -54,6 +54,8 @@ def test_entry_filters_block_weak_market_breadth() -> None:
     assert result.empty
     assert report["status"] == "blocked"
     assert report["reason"] == "market breadth below threshold"
+    assert report["published_candidate_count"] == 0
+    assert report["stages"] == [{"gate": "market_breadth", "before": 5, "after": 0, "removed": 5}]
 
 
 def test_entry_filters_are_noop_when_feature_flag_is_off() -> None:

@@ -103,6 +103,8 @@ def load_model_registry_summary(
         return {"error": str(exc), "latest": None, "champion": None}
 
 
+if st.button("Làm mới dữ liệu"):
+    load_overview.clear()
 sigs, perf, runs = load_overview()
 run_count = len(runs)
 if not sigs.empty and "signal_date" in sigs.columns:
@@ -139,28 +141,16 @@ else:
     if pd.notna(parsed_run_date):
         latest_run_day = parsed_run_date.tz_convert("Asia/Ho_Chi_Minh").date()
 latest_run_status = str(latest_run.get("status") or "").strip().lower()
-if latest_run_day == current_market_date and latest_run_status == "quality_failed":
-    signal_status = "QUALITY BLOCKED"
-    signal_status_color = "#FF5252"
-elif latest_run_day == current_market_date and latest_run_status in {
-    "challenger_rejected",
-    "registry_failed",
-    "artifact_failed",
-}:
-    signal_status = "MODEL BLOCKED"
-    signal_status_color = "#FF5252"
-elif latest_run_day == current_market_date and latest_run_status == "no_trade":
-    signal_status = "NO TRADE"
-    signal_status_color = "#FFB74D"
-elif latest_signal_day == current_market_date:
-    signal_status = "SIGNAL UPDATED"
-    signal_status_color = "#00E676"
-elif latest_signal_day is not None:
-    signal_status = "SIGNAL LAGGING"
-    signal_status_color = "#FFB74D"
-else:
-    signal_status = "NO SIGNAL"
-    signal_status_color = "#FFB74D"
+from src.dashboard.run_status import render_run_status, run_state
+presentation = run_state(latest_run, latest_signal_date)
+signal_status = presentation["label"]
+if presentation["stale"]:
+    signal_status += " · CẦN KIỂM TRA ĐỘ MỚI"
+signal_status_color = (
+    "#FF5252" if presentation["blocked"] else
+    "#00E676" if presentation["label"] == "SUCCESS" and not presentation["stale"] else
+    "#FFB74D"
+)
 runtime_config = Config()
 model_registry_summary = load_model_registry_summary(
     str(runtime_config.model_registry_path),
@@ -221,6 +211,8 @@ with cols[1]:
         unsafe_allow_html=True,
     )
 
+render_run_status(latest_run, latest_signal_date)
+
 # === NAVIGATION TABS ===
 tab_signals, tab_leaderboard, tab_deepdive, tab_system = st.tabs([
     "📡 Tín Hiệu & P&L Real-time",
@@ -238,7 +230,7 @@ with tab_signals:
     )
     if not latest_sigs.empty:
         st.markdown(
-            f'<div class="section-title">TOP TÍN HIỆU KHUYẾN NGHỊ · PHIÊN {latest_signal_date}</div>',
+            f'<div class="section-title">TÍN HIỆU GẦN NHẤT · PHIÊN {latest_signal_date}</div>',
             unsafe_allow_html=True,
         )
 
