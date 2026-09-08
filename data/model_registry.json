@@ -1,6 +1,6 @@
 {
   "last_decision": {
-    "created_at": "2026-09-07T15:08:05.463490+00:00",
+    "created_at": "2026-09-08T06:02:11.923849+00:00",
     "decision": "promoted_no_material_regression",
     "horizon": 20,
     "model_family": "xgboost_technical_v7_execution_max_sl05_tp10",
@@ -95,36 +95,36 @@
     },
     {
       "artifact": {
-        "archive_sha256": "a2fa20e0a0cb985407fe69f832d557c562a1084b2a98df4c9abdf74d259b4dd2",
-        "archive_size_bytes": 777703,
+        "archive_sha256": "136626b2b6bc82b27b163da7a8d1996d15b7d54f3b2af9f5ce8e93058796f0a4",
+        "archive_size_bytes": 779169,
         "model_count": 4,
         "model_version": "xgboost_technical_v7_execution_max_sl05_tp10_h20_2026-09-07"
       },
       "champion_metrics": {
-        "accuracy": 0.6083247156153051,
+        "accuracy": 0.6000517063081696,
         "evaluation_dates": 40.0,
         "execution_evaluation_dates": 40.0,
-        "execution_top3_excess_return": 0.0022492276657347906,
-        "execution_top3_spread": 0.008910967838256388,
-        "execution_top3_win_rate": 0.4416666666666667,
-        "execution_universe_excess_return": -0.006661740172521599,
-        "f1": 0.2154324184360435,
-        "majority_baseline_accuracy": 0.6577042399172699,
-        "positive_rate": 0.3422957600827301,
-        "precision": 0.342668863261944,
-        "recall": 0.15709969788519637,
-        "roc_auc": 0.4994418476505349,
-        "top3_excess_return": 0.0022492276657347906,
-        "top3_spread": 0.008910967838256388,
-        "top3_win_rate": 0.4416666666666667,
-        "universe_excess_return": -0.006661740172521599
+        "execution_top3_excess_return": 0.0019768522198233738,
+        "execution_top3_spread": 0.0081824324195665,
+        "execution_top3_win_rate": 0.4916666666666667,
+        "execution_universe_excess_return": -0.006205580199743126,
+        "f1": 0.2566074002883229,
+        "majority_baseline_accuracy": 0.6429679420889349,
+        "positive_rate": 0.3570320579110651,
+        "precision": 0.38142857142857145,
+        "recall": 0.19333816075307747,
+        "roc_auc": 0.5141362165083196,
+        "top3_excess_return": 0.0019768522198233738,
+        "top3_spread": 0.0081824324195665,
+        "top3_win_rate": 0.4916666666666667,
+        "universe_excess_return": -0.006205580199743126
       },
-      "champion_model_version": "xgboost_technical_v7_execution_max_sl05_tp10_h20_2026-09-04",
-      "created_at": "2026-09-07T15:08:05.463490+00:00",
+      "champion_model_version": "xgboost_technical_v7_execution_max_sl05_tp10_h20_2026-09-07",
+      "created_at": "2026-09-08T06:02:11.923849+00:00",
       "decision": "promoted_no_material_regression",
       "deltas_vs_champion": {
-        "execution_top3_excess_return": -0.0002723754459114168,
-        "execution_top3_spread": -0.000728535418689889
+        "execution_top3_excess_return": 0.0033340430505771385,
+        "execution_top3_spread": 0.0033340430045968594
       },
       "horizon": 20,
       "live_validation": {
@@ -151,20 +151,20 @@
         "accuracy": 0.6000517063081696,
         "evaluation_dates": 40.0,
         "execution_evaluation_dates": 40.0,
-        "execution_top3_excess_return": 0.0019768522198233738,
-        "execution_top3_spread": 0.0081824324195665,
+        "execution_top3_excess_return": 0.005310895270400512,
+        "execution_top3_spread": 0.011516475424163359,
         "execution_top3_win_rate": 0.4916666666666667,
-        "execution_universe_excess_return": -0.006205580199743126,
-        "f1": 0.2566074002883229,
+        "execution_universe_excess_return": -0.006205580153762847,
+        "f1": 0.24939349830179525,
         "majority_baseline_accuracy": 0.6429679420889349,
         "positive_rate": 0.3570320579110651,
-        "precision": 0.38142857142857145,
-        "recall": 0.19333816075307747,
-        "roc_auc": 0.5141362165083196,
-        "top3_excess_return": 0.0019768522198233738,
-        "top3_spread": 0.0081824324195665,
+        "precision": 0.3779411764705882,
+        "recall": 0.18609703113685735,
+        "roc_auc": 0.5149494241889834,
+        "top3_excess_return": 0.005310895270400512,
+        "top3_spread": 0.011516475424163359,
         "top3_win_rate": 0.4916666666666667,
-        "universe_excess_return": -0.006205580199743126
+        "universe_excess_return": -0.006205580153762847
       },
       "min_quality_dates": 30,
       "model_family": "xgboost_technical_v7_execution_max_sl05_tp10",
@@ -177,5 +177,5 @@
     }
   ],
   "schema_version": 1,
-  "updated_at": "2026-09-07T15:08:05.463490+00:00"
+  "updated_at": "2026-09-08T06:02:11.923849+00:00"
 }
