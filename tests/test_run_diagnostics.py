@@ -207,7 +207,8 @@ def test_full_dashboard_and_history_keep_no_trade_visible(monkeypatch):
     monkeypatch.setattr(supabase_client, "get_client", lambda: FakeCloud())
     monkeypatch.setattr(realtime, "track_signals", lambda *args, **kwargs: [])
     st.cache_data.clear()
-    for path in (Path("src/dashboard/app.py"), next(Path("src/dashboard/pages").glob("1_*.py"))):
+    dashboard = Path(__file__).resolve().parents[1] / "src" / "dashboard"
+    for path in (dashboard / "app.py", next((dashboard / "pages").glob("1_*.py"))):
         app = AppTest.from_file(str(path)).run(timeout=30)
         assert not app.exception, [(e.message) for e in app.exception]
         assert any("NO TRADE" in w.value for w in app.warning)
