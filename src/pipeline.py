@@ -8,6 +8,7 @@ import xgboost as xgb
 
 from src.config import Config
 from src.data.collector import OHLCVCollector
+from src.data.health import assess_prices
 from src.data.storage import PriceStorage
 from src.data.universe import filter_quality, get_ticker_universe
 from src.data.validator import DataValidator
@@ -389,7 +390,6 @@ def run_pipeline(
             diagnostics["data_health"].append({"ticker": ticker, "status": "fetch_failed"})
             continue
         df = _closed_market_sessions(df, run_time)
-        from src.data.health import assess_prices
         previous = None
         previous_path = config.raw_data_dir / f"{ticker}_raw.parquet"
         if previous_path.exists():
@@ -397,7 +397,10 @@ def run_pipeline(
                 previous = pd.read_parquet(previous_path)
             except Exception:
                 log.warning("Cannot read previous cache for %s", ticker)
-        health = assess_prices(ticker, df, latest_benchmark_date, previous)
+        health = assess_prices(
+            ticker, df, latest_benchmark_date, previous,
+            source_invalid_rows=collector.last_invalid_count,
+        )
         diagnostics["data_health"].append(health)
         if health["status"] != "ok":
             log.warning("Skipping %s: data health %s", ticker, health)
@@ -422,6 +425,22 @@ def run_pipeline(
     log.info("Collected %d/%d tickers (skipped %d)", collected, len(universe), skipped)
     minimum_collected = max(30, int(len(universe) * 0.5))
     if collected < minimum_collected:
+        diagnostics["collection"] = {
+            "collected": collected,
+            "universe_count": len(universe),
+            "minimum_required": minimum_collected,
+        }
+        save_pipeline_run({}, status="data_failed", run_key=run_key, diagnostics=diagnostics)
+        # Sync only the run report: failed collection must not trigger price
+        # fetching/backfills or publish incomplete signal data.
+        try:
+            from src.supabase_client import get_client
+
+            client = get_client()
+            if client is not None:
+                client.sync_pipeline_runs()
+        except Exception:
+            log.exception("Cannot sync failed collection diagnostics; saved locally")
         raise RuntimeError(
             f"Only collected {collected}/{len(universe)} tickers; refusing to publish a partial run"
         )
