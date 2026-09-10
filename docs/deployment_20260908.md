@@ -18,4 +18,6 @@ Revert the release code commit if the dashboard or pipeline regresses. Leave the
 - Migration completed in Supabase: `pipeline_runs.diagnostics` is present as nullable `jsonb`; PostgREST schema reload issued and read-only API access verified.
 - Release checks passed locally: Ruff and `git diff --check`; the isolated offline suite passed 179 tests.
 - The reviewed changes preserve a successful publication after a later `data_failed` attempt and expose that attempt separately in the dashboard.
-- CI, push/merge and a post-deployment pipeline run remain the final verification steps.
+- PR #2 merged successfully as `c006a7c`; both PR checks passed.
+- Post-deployment `daily.yml` run `34498156603` completed successfully. The main pipeline and paper-candidate jobs both passed.
+- Cloud verification after that run shows `2026-09-10` as `no_trade`, with diagnostics containing `data_health` and `entry_filters`. The live Streamlit dashboard shows the same run/date and explains the 20-session breadth gate (0.3608 below 0.5; 97 symbols reduced to 0).
