@@ -11,12 +11,16 @@ def assess_prices(
     frame: pd.DataFrame,
     benchmark_date: object,
     previous: pd.DataFrame | None = None,
+    *,
+    source_invalid_rows: int = 0,
 ) -> dict:
     report = {
         "ticker": ticker,
         "rows": len(frame),
         "latest_date": None,
         "status": "invalid",
+        "source_invalid_rows": int(source_invalid_rows),
+        "invalid_rows": int(source_invalid_rows),
         "revised_rows": 0,
         "max_price_revision_pct": 0.0,
     }
@@ -42,7 +46,9 @@ def assess_prices(
     )
     latest = dates.max()
     report["latest_date"] = latest.date().isoformat() if pd.notna(latest) else None
-    report["invalid_rows"] = int(invalid.sum())
+    # Retain source rejections even though the collector already removed them.
+    # Eligibility below still assesses the cleaned frame.
+    report["invalid_rows"] += int(invalid.sum())
     benchmark = pd.Timestamp(benchmark_date).normalize()
     if invalid.any() or pd.isna(latest) or latest > benchmark:
         report["reason"] = "invalid prices or dates after benchmark"

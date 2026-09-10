@@ -94,7 +94,7 @@ def run_state(run: dict, signal_date=None, *, as_of=None) -> dict:
         "no_trade": relevant and status == "no_trade",
         "blocked": relevant
         and status
-        in {"quality_failed", "registry_failed", "artifact_failed", "challenger_rejected"},
+        in {"data_failed", "quality_failed", "registry_failed", "artifact_failed", "challenger_rejected"},
         "diagnostics": diagnostics,
     }
 
@@ -131,9 +131,24 @@ def render_run_status(run: dict, signal_date=None) -> None:
         )
 
     diagnostics = state["diagnostics"]
+    failed_attempt = diagnostics.get("last_failed_attempt")
+    if isinstance(failed_attempt, dict):
+        st.warning(
+            "Lần chạy lại bị lỗi thu thập dữ liệu. Kết quả thành công và tín hiệu "
+            "đã phát trước đó được giữ nguyên."
+        )
+        with st.expander("Chi tiết lần chạy lại thất bại"):
+            st.json(failed_attempt)
     filters = diagnostics.get("entry_filters")
     with st.expander("Vì sao có / không có tín hiệu?", expanded=state["no_trade"]):
-        if not isinstance(filters, dict):
+        collection = diagnostics.get("collection")
+        if isinstance(collection, dict):
+            st.warning(
+                f"Không đủ dữ liệu hợp lệ: {collection.get('collected')} / "
+                f"{collection.get('universe_count')} mã; cần tối thiểu "
+                f"{collection.get('minimum_required')} mã. Pipeline đã dừng."
+            )
+        elif not isinstance(filters, dict):
             st.info(
                 "Lần chạy này chưa lưu báo cáo bộ lọc. Chi tiết sẽ có từ lần chạy pipeline mới; không suy đoán từ log khác."
             )
@@ -181,14 +196,15 @@ def render_run_status(run: dict, signal_date=None) -> None:
             st.info("Chưa có báo cáo chất lượng dữ liệu cho lần chạy này.")
         else:
             rows = [r for r in health if isinstance(r, dict)]
-            flagged = [r for r in rows if r.get("status") != "ok" or r.get("large_revision")]
+            flagged = [r for r in rows if r.get("status") != "ok"
+                       or r.get("large_revision") or r.get("source_invalid_rows", 0)]
             st.caption(
                 f"Đã kiểm tra {len(rows)} mã · {len(flagged)} mã cần chú ý. "
                 "So sánh độ mới với phiên VNINDEX, không với ngày cuối tuần."
             )
             if flagged:
                 st.warning(
-                    "Có dữ liệu chậm, bị loại hoặc giá lịch sử điều chỉnh lớn. Điều chỉnh giá có thể do sự kiện doanh nghiệp."
+                    "Có dữ liệu chậm, dòng giá lỗi bị loại hoặc giá lịch sử điều chỉnh lớn. Điều chỉnh giá có thể do sự kiện doanh nghiệp."
                 )
             st.dataframe(
                 pd.DataFrame(flagged or rows).rename(
@@ -201,6 +217,8 @@ def render_run_status(run: dict, signal_date=None) -> None:
                         "max_price_revision_pct": "Mức điều chỉnh tối đa (tỷ lệ)",
                         "large_revision": "Điều chỉnh từ 5%",
                         "rows": "Số dòng",
+                        "source_invalid_rows": "Dòng lỗi bị loại tại nguồn",
+                        "invalid_rows": "Tổng số dòng lỗi",
                     }
                 ),
                 hide_index=True,
