@@ -450,6 +450,28 @@ def save_pipeline_run(
     init_db()
     run_key = str(run_key or date.today().isoformat())
     conn = get_conn()
+    # Collection failures never replace an already published result. Keep the
+    # failed attempt visible without erasing the publication's metrics/time.
+    if status == "data_failed":
+        existing = conn.execute(
+            "SELECT id, diagnostics FROM pipeline_runs WHERE run_key = ? AND status = 'success'",
+            (run_key,),
+        ).fetchone()
+        if existing:
+            publication = json.loads(existing[1]) if existing[1] else {}
+            publication["last_failed_attempt"] = {
+                "status": status,
+                "executed_at": conn.execute("SELECT CURRENT_TIMESTAMP").fetchone()[0],
+                "diagnostics": diagnostics,
+            }
+            conn.execute(
+                "UPDATE pipeline_runs SET diagnostics = ? WHERE id = ?",
+                (json.dumps(publication, ensure_ascii=False, allow_nan=False), existing[0]),
+            )
+            conn.commit()
+            conn.close()
+            log.warning("Preserved successful publication %s after collection failure", run_key)
+            return existing[0]
     cur = conn.execute(
         """INSERT INTO pipeline_runs
              (run_key, accuracy, precision, recall, f1, roc_auc,

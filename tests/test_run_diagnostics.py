@@ -175,6 +175,43 @@ def test_cloud_sync_supports_new_and_legacy_schema(monkeypatch, tmp_path):
         assert (rows[0].get("diagnostics") == report) is supports
 
 
+def test_failed_collection_preserves_successful_publication(monkeypatch, tmp_path):
+    monkeypatch.setattr(database, "DB_PATH", tmp_path / "engine.db")
+    original = {"data_date": "2026-09-04", "entry_filters": {"status": "passed"}}
+    run_id = database.save_pipeline_run(
+        {"accuracy": 0.8}, run_key="2026-09-04", diagnostics=original,
+    )
+    conn = database.get_conn()
+    conn.execute("UPDATE pipeline_runs SET run_date = '2026-09-04 10:00:00'")
+    conn.execute("INSERT INTO signals(signal_date,ticker,rank,score) VALUES ('2026-09-04','AAA',1,0.9)")
+    conn.commit()
+    conn.close()
+    failure = {"collection": {"collected": 0, "minimum_required": 30}}
+    assert database.save_pipeline_run(
+        {}, status="data_failed", run_key="2026-09-04", diagnostics=failure,
+    ) == run_id
+    conn = database.get_conn()
+    row = conn.execute("SELECT status, accuracy, run_date, diagnostics FROM pipeline_runs").fetchone()
+    assert conn.execute("SELECT COUNT(*) FROM signals").fetchone()[0] == 1
+    conn.close()
+    assert row[:3] == ("success", 0.8, "2026-09-04 10:00:00")
+    saved = json.loads(row[3])
+    assert saved["entry_filters"] == original["entry_filters"]
+    assert saved["last_failed_attempt"]["diagnostics"] == failure
+    run = {"run_key": "2026-09-04", "status": "success", "diagnostics": saved}
+    app = AppTest.from_string(
+        "from src.dashboard.run_status import render_run_status\n"
+        f"render_run_status({run!r}, '2026-09-04')"
+    ).run()
+    assert not app.exception
+    assert not app.error
+    assert any("Lần chạy lại bị lỗi" in w.value for w in app.warning)
+    database.save_pipeline_run({}, run_key="2026-09-04", diagnostics=original)
+    conn = database.get_conn()
+    assert "last_failed_attempt" not in json.loads(conn.execute("SELECT diagnostics FROM pipeline_runs").fetchone()[0])
+    conn.close()
+
+
 def test_old_no_trade_remains_visible_with_previous_signal():
     state = run_state(
         {"run_key": "2026-09-04", "run_date": "2026-09-04T15:01:50Z", "status": "no_trade"},

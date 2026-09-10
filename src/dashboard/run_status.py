@@ -131,6 +131,14 @@ def render_run_status(run: dict, signal_date=None) -> None:
         )
 
     diagnostics = state["diagnostics"]
+    failed_attempt = diagnostics.get("last_failed_attempt")
+    if isinstance(failed_attempt, dict):
+        st.warning(
+            "Lần chạy lại bị lỗi thu thập dữ liệu. Kết quả thành công và tín hiệu "
+            "đã phát trước đó được giữ nguyên."
+        )
+        with st.expander("Chi tiết lần chạy lại thất bại"):
+            st.json(failed_attempt)
     filters = diagnostics.get("entry_filters")
     with st.expander("Vì sao có / không có tín hiệu?", expanded=state["no_trade"]):
         collection = diagnostics.get("collection")
