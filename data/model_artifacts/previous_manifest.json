@@ -1,32 +1,32 @@
 {
-  "archive_sha256": "a2fa20e0a0cb985407fe69f832d557c562a1084b2a98df4c9abdf74d259b4dd2",
-  "archive_size_bytes": 777703,
-  "created_at": "2026-09-07T15:08:05.461080+00:00",
+  "archive_sha256": "136626b2b6bc82b27b163da7a8d1996d15b7d54f3b2af9f5ce8e93058796f0a4",
+  "archive_size_bytes": 779169,
+  "created_at": "2026-09-08T06:02:11.922118+00:00",
   "model_version": "xgboost_technical_v7_execution_max_sl05_tp10_h20_2026-09-07",
   "models": [
     {
       "filename": "xgboost_model_h1.json",
       "horizon": 1,
-      "sha256": "bf32a850bfd15376a053372f52e90b82bcef9ddec31ee81a709aad2f18d48007",
-      "size_bytes": 744692
+      "sha256": "ce4f4c4670a010b6e40b8f54e21a2f77039fe70b9b279361355fc1180ef575cc",
+      "size_bytes": 747299
     },
     {
       "filename": "xgboost_model_h5.json",
       "horizon": 5,
-      "sha256": "acfa4131ce838691aa7e06ca2df4f9211fa53c497f13dbe69f6130e643261e5f",
-      "size_bytes": 750764
+      "sha256": "c72a321733fecf3795fa8a993c97ccb860e6c6f33040df2c8266290ee675da8c",
+      "size_bytes": 745428
     },
     {
       "filename": "xgboost_model_h10.json",
       "horizon": 10,
-      "sha256": "58bbaaab4829d1d78c9bea71f28c4613b1ac082aedd3d6573b41aa76a09bc79f",
-      "size_bytes": 725561
+      "sha256": "a6e88970992910e8ba6e9a0c2eb9e1301cf2188403a5732164d335d9ef36c758",
+      "size_bytes": 732668
     },
     {
       "filename": "xgboost_model_h20.json",
       "horizon": 20,
-      "sha256": "956382e9da787e4e1ab8e9c612dc64d7c8173bec025cdf7f2236598b238c6540",
-      "size_bytes": 735770
+      "sha256": "2cf01f755e81b2ec39e606a3aa1995170d639a4d3ccfcb29d476a00fc417ac8b",
+      "size_bytes": 734376
     }
   ],
   "schema_version": 1,
