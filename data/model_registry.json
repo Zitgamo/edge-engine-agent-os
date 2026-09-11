@@ -1,13 +1,13 @@
 {
   "last_decision": {
-    "created_at": "2026-09-10T15:52:14.986333+00:00",
-    "decision": "promoted_no_material_regression",
+    "created_at": "2026-09-11T13:39:59.076806+00:00",
+    "decision": "quality_gate_failed",
     "horizon": 20,
     "model_family": "xgboost_technical_v7_execution_max_sl05_tp10",
-    "model_version": "xgboost_technical_v7_execution_max_sl05_tp10_h20_2026-09-10",
-    "reason": "Candidate passed the execution quality gate and stayed within 0.20% of the current champion.",
-    "run_key": "2026-09-10",
-    "status": "champion"
+    "model_version": "xgboost_technical_v7_execution_max_sl05_tp10_h20_2026-09-11",
+    "reason": "T+20 model quality gate failed: execution top-3 excess return=-0.03% < minimum 0.00%.",
+    "run_key": "2026-09-11",
+    "status": "rejected"
   },
   "records": [
     {
@@ -406,8 +406,81 @@
       "run_key": "2026-09-10",
       "status": "champion",
       "trained_until": "2026-09-10"
+    },
+    {
+      "champion_metrics": {
+        "accuracy": 0.562306101344364,
+        "evaluation_dates": 40.0,
+        "execution_evaluation_dates": 40.0,
+        "execution_top3_excess_return": 0.0061350812933308515,
+        "execution_top3_spread": 0.009884566945384496,
+        "execution_top3_win_rate": 0.5666666666666667,
+        "execution_universe_excess_return": -0.003749485652053643,
+        "f1": 0.230804179918219,
+        "majority_baseline_accuracy": 0.5972078593588418,
+        "positive_rate": 0.4027921406411582,
+        "precision": 0.39502332814930013,
+        "recall": 0.16302952503209242,
+        "roc_auc": 0.5204958071453579,
+        "top3_excess_return": 0.0061350812933308515,
+        "top3_spread": 0.009884566945384496,
+        "top3_win_rate": 0.5666666666666667,
+        "universe_excess_return": -0.003749485652053643
+      },
+      "champion_model_version": "xgboost_technical_v7_execution_max_sl05_tp10_h20_2026-09-10",
+      "created_at": "2026-09-11T13:39:59.076806+00:00",
+      "decision": "quality_gate_failed",
+      "deltas_vs_champion": {},
+      "horizon": 20,
+      "live_validation": {
+        "avg_excess_return": null,
+        "basket_count": 0,
+        "baskets_to_minimum": 10,
+        "health_status": "pending",
+        "latest_signal_date": null,
+        "min_avg_excess_return": 0.0,
+        "min_baskets": 10,
+        "min_trades": 30,
+        "min_win_rate": 0.45,
+        "model_family": "xgboost_technical_v7_execution_max_sl05_tp10",
+        "model_versions": [],
+        "ready": false,
+        "reason": "No realized rows belong to the current model family yet.",
+        "status": "collecting",
+        "trade_count": 0,
+        "trades_to_minimum": 30,
+        "win_rate": null
+      },
+      "max_regression": 0.002,
+      "metrics": {
+        "accuracy": 0.5806618407445708,
+        "evaluation_dates": 40.0,
+        "execution_evaluation_dates": 40.0,
+        "execution_top3_excess_return": -0.0003165340272052022,
+        "execution_top3_spread": 0.0029503886634031154,
+        "execution_top3_win_rate": 0.5,
+        "execution_universe_excess_return": -0.0032669226906083177,
+        "f1": 0.2334593572778828,
+        "majority_baseline_accuracy": 0.5979834539813857,
+        "positive_rate": 0.40201654601861425,
+        "precision": 0.44028520499108736,
+        "recall": 0.15884244372990353,
+        "roc_auc": 0.5446164069157551,
+        "top3_excess_return": -0.0003165340272052022,
+        "top3_spread": 0.0029503886634031154,
+        "top3_win_rate": 0.5,
+        "universe_excess_return": -0.0032669226906083177
+      },
+      "min_quality_dates": 30,
+      "model_family": "xgboost_technical_v7_execution_max_sl05_tp10",
+      "model_version": "xgboost_technical_v7_execution_max_sl05_tp10_h20_2026-09-11",
+      "quality_passed": false,
+      "reason": "T+20 model quality gate failed: execution top-3 excess return=-0.03% < minimum 0.00%.",
+      "run_key": "2026-09-11",
+      "status": "rejected",
+      "trained_until": "2026-09-11"
     }
   ],
   "schema_version": 1,
-  "updated_at": "2026-09-10T15:52:14.986333+00:00"
+  "updated_at": "2026-09-11T13:39:59.076806+00:00"
 }
