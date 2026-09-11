@@ -391,6 +391,33 @@ def test_sync_pipeline_runs_upserts_by_stable_run_key(monkeypatch, tmp_path) -> 
     assert captured["rows"][0]["execution_top3_excess_return"] == 0.012
 
 
+def test_sync_pipeline_runs_uses_newest_market_session_not_late_old_rerun(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(database, "DB_PATH", tmp_path / "engine.db")
+    database.save_pipeline_run({"accuracy": 0.8}, run_key="2026-09-03")
+    database.save_pipeline_run({}, status="no_trade", run_key="2026-09-04")
+    with database.get_conn() as conn:
+        conn.execute("UPDATE pipeline_runs SET run_date = ? WHERE run_key = ?", ("2026-09-05 10:00:00", "2026-09-03"))
+        conn.execute("UPDATE pipeline_runs SET run_date = ? WHERE run_key = ?", ("2026-09-04 16:00:00", "2026-09-04"))
+    client = SupabaseClient(SupabaseConfig("https://example.test", "anon", "service"))
+    monkeypatch.setattr(client, "_remote_column_available", lambda table, column: True)
+    captured = {}
+    monkeypatch.setattr(
+        client,
+        "_upsert",
+        lambda table, rows, on_conflict=None: captured.update({"rows": rows}) or len(rows),
+    )
+
+    assert client.sync_pipeline_runs() == 1
+    assert captured["rows"] == [{
+        "run_date": "2026-09-04 16:00:00", "accuracy": None, "precision": None,
+        "recall": None, "f1": None, "roc_auc": None, "status": "no_trade",
+        "run_key": "2026-09-04", "execution_evaluation_dates": None,
+        "execution_top3_win_rate": None, "execution_top3_excess_return": None,
+        "execution_universe_excess_return": None, "execution_top3_spread": None,
+        "diagnostics": None,
+    }]
+
+
 def test_sync_actuals_includes_absolute_return_metrics(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(database, "DB_PATH", tmp_path / "engine.db")
     database.update_actuals(pd.DataFrame([{

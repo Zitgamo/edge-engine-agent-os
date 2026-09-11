@@ -8,7 +8,7 @@ import pytest
 from streamlit.testing.v1 import AppTest
 
 from src import database, pipeline, supabase_client
-from src.dashboard.run_status import parse_diagnostics, run_state
+from src.dashboard.run_status import latest_execution, latest_publication, parse_diagnostics, run_state
 from src.data.health import assess_prices
 from src.data.collector import OHLCVCollector
 from src.supabase_client import SupabaseClient, SupabaseConfig
@@ -225,6 +225,26 @@ def test_old_no_trade_remains_visible_with_previous_signal():
         assert parse_diagnostics(value) == {}
 
 
+def test_newest_market_session_status_survives_a_late_historical_rerun():
+    rows = [
+        {"run_key": "2026-09-03", "run_date": "2026-09-05T03:00:00Z", "status": "success"},
+        {"run_key": "2026-09-04", "run_date": "2026-09-04T09:00:00Z", "status": "no_trade"},
+    ]
+    publication = latest_publication(rows)
+    assert publication["run_key"] == "2026-09-04"
+    assert latest_execution(rows)["run_key"] == "2026-09-03"
+    assert run_state(publication, "2026-09-03")["no_trade"]
+    app = AppTest.from_string(
+        "from src.dashboard.run_status import latest_execution, latest_publication, render_run_status\n"
+        f"rows = {rows!r}\n"
+        "render_run_status(latest_publication(rows), '2026-09-03', "
+        "latest_execution_run=latest_execution(rows))"
+    ).run()
+    assert not app.exception
+    assert app.metric[1].value == "05/09/2026 10:00"
+    assert any("NO TRADE" in warning.value for warning in app.warning)
+
+
 def test_ui_shows_old_signal_and_no_trade_explanation():
     app = AppTest.from_string("""
 from src.dashboard.run_status import render_run_status
@@ -323,7 +343,8 @@ def test_full_dashboard_and_history_keep_no_trade_visible(monkeypatch):
 
         def get_pipeline_summary(self):
             return [
-                {"run_key": "2026-09-04", "run_date": "2026-09-04T15:01:50Z", "status": "no_trade"}
+                {"run_key": "2026-09-03", "run_date": "2026-09-05T03:00:00Z", "status": "success"},
+                {"run_key": "2026-09-04", "run_date": "2026-09-04T15:01:50Z", "status": "no_trade"},
             ]
 
         def get_strategy_signals(self, **kwargs):

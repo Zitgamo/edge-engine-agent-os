@@ -48,7 +48,9 @@ def load_overview():
             from src.database import get_conn
             conn = get_conn()
             runs = pd.read_sql_query(
-                "SELECT * FROM pipeline_runs ORDER BY run_date DESC LIMIT 50",
+                "SELECT * FROM pipeline_runs "
+                "ORDER BY COALESCE(NULLIF(TRIM(run_key), ''), substr(run_date, 1, 10)) DESC, "
+                "run_date DESC, id DESC LIMIT 50",
                 conn,
             )
             conn.close()
@@ -123,7 +125,11 @@ latest_signal_day = (
     else None
 )
 current_market_date = today_vn()
-latest_run = runs.iloc[0].to_dict() if not runs.empty else {}
+from src.dashboard.run_status import latest_execution, latest_publication, render_run_status, run_state
+
+run_rows = runs.to_dict("records") if not runs.empty else []
+latest_run = latest_publication(run_rows)
+latest_execution_run = latest_execution(run_rows)
 raw_run_key = latest_run.get("run_key")
 latest_run_key = (
     str(raw_run_key).strip()[:10]
@@ -141,7 +147,6 @@ else:
     if pd.notna(parsed_run_date):
         latest_run_day = parsed_run_date.tz_convert("Asia/Ho_Chi_Minh").date()
 latest_run_status = str(latest_run.get("status") or "").strip().lower()
-from src.dashboard.run_status import render_run_status, run_state
 presentation = run_state(latest_run, latest_signal_date)
 signal_status = presentation["label"]
 if presentation["stale"]:
@@ -211,7 +216,11 @@ with cols[1]:
         unsafe_allow_html=True,
     )
 
-render_run_status(latest_run, latest_signal_date)
+render_run_status(
+    latest_run,
+    latest_signal_date,
+    latest_execution_run=latest_execution_run,
+)
 
 # === NAVIGATION TABS ===
 tab_signals, tab_leaderboard, tab_deepdive, tab_system = st.tabs([

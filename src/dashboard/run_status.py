@@ -42,6 +42,49 @@ def day(value) -> str | None:
     return parsed.date().isoformat() if pd.notna(parsed) else None
 
 
+def session_day(run: dict) -> str | None:
+    """Return the market session for a run, falling back for legacy rows."""
+    keyed_day = day(run.get("run_key"))
+    if keyed_day:
+        return keyed_day
+    executed = pd.to_datetime(run.get("run_date"), errors="coerce", utc=True)
+    if pd.notna(executed):
+        return executed.tz_convert("Asia/Ho_Chi_Minh").date().isoformat()
+    return None
+
+
+def latest_publication(rows) -> dict:
+    """Choose status by market session, then by execution time within a session."""
+    candidates = [dict(row) for row in rows if isinstance(row, dict)]
+    if not candidates:
+        return {}
+
+    def key(run: dict) -> tuple[str, int]:
+        executed = pd.to_datetime(run.get("run_date"), errors="coerce", utc=True)
+        return (
+            session_day(run) or "",
+            int(executed.value) if pd.notna(executed) else -1,
+        )
+
+    return max(candidates, key=key)
+
+
+def latest_execution(rows) -> dict:
+    """Keep the newest actual execution available as separate UI context."""
+    candidates = [dict(row) for row in rows if isinstance(row, dict)]
+    if not candidates:
+        return {}
+
+    def key(run: dict) -> tuple[int, str]:
+        executed = pd.to_datetime(run.get("run_date"), errors="coerce", utc=True)
+        return (
+            int(executed.value) if pd.notna(executed) else -1,
+            session_day(run) or "",
+        )
+
+    return max(candidates, key=key)
+
+
 def expected_weekday(as_of=None) -> str:
     """Estimate the completed weekday, allowing the scheduled EOD retries.
 
@@ -62,11 +105,9 @@ def expected_weekday(as_of=None) -> str:
 
 def run_state(run: dict, signal_date=None, *, as_of=None) -> dict:
     diagnostics = parse_diagnostics(run.get("diagnostics"))
-    run_day = day(run.get("run_key"))
+    run_day = session_day(run)
     executed = pd.to_datetime(run.get("run_date"), errors="coerce", utc=True)
-    legacy_run_day = not run_day and pd.notna(executed)
-    if legacy_run_day:
-        run_day = executed.tz_convert("Asia/Ho_Chi_Minh").date().isoformat()
+    legacy_run_day = not day(run.get("run_key")) and pd.notna(executed)
     signal_day = day(signal_date)
     status = str(run.get("status") or "").strip().lower()
     # A late rerun of an older session must not supersede a newer signal.
@@ -99,13 +140,14 @@ def run_state(run: dict, signal_date=None, *, as_of=None) -> dict:
     }
 
 
-def render_run_status(run: dict, signal_date=None) -> None:
+def render_run_status(run: dict, signal_date=None, *, latest_execution_run: dict | None = None) -> None:
     import streamlit as st
 
     state = run_state(run, signal_date)
     cols = st.columns(3)
     cols[0].metric("Dữ liệu dùng trong pipeline", state["data_day"] or "Chưa ghi nhận")
-    cols[1].metric("Pipeline chạy gần nhất (giờ VN)", state["executed"])
+    execution_state = run_state(latest_execution_run or run, signal_date)
+    cols[1].metric("Pipeline chạy gần nhất (giờ VN)", execution_state["executed"])
     cols[2].metric("Tín hiệu gần nhất", state["signal_day"] or "Chưa có")
     st.caption(f"Phiên pipeline: {state['run_day'] or 'Chưa rõ'} · Kết quả: {state['label']}")
     if state["legacy_run_day"]:

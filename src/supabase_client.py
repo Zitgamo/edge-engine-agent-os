@@ -408,7 +408,9 @@ class SupabaseClient:
             "execution_evaluation_dates, execution_top3_win_rate, "
             "execution_top3_excess_return, execution_universe_excess_return, "
             "execution_top3_spread, status, run_key, diagnostics "
-            "FROM pipeline_runs ORDER BY run_date DESC, id DESC LIMIT 1"
+            "FROM pipeline_runs "
+            "ORDER BY COALESCE(NULLIF(TRIM(run_key), ''), substr(run_date, 1, 10)) DESC, "
+            "run_date DESC, id DESC LIMIT 1"
         ).fetchall()
         conn.close()
         if not rows:
@@ -954,7 +956,7 @@ class SupabaseClient:
         return self._query("pipeline_runs", {
             "select": "*",
             "order": "run_date.desc",
-            "limit": "50",
+            "limit": "500",
         })
 
     def get_performance_summary(self) -> list[dict[str, Any]]:

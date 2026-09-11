@@ -36,20 +36,25 @@ def load_data():
 
 
 @st.cache_data(ttl=120, max_entries=2)
-def load_latest_run():
+def load_pipeline_runs():
     from src.supabase_client import get_client
     client = get_client()
     if client:
         rows = client.get_pipeline_summary()
-        return rows[0] if rows else {}
+        return rows or []
     from src.database import get_conn, init_db
     init_db()
     conn = get_conn()
     try:
-        rows = pd.read_sql_query("SELECT * FROM pipeline_runs ORDER BY run_date DESC LIMIT 1", conn)
+        rows = pd.read_sql_query(
+            "SELECT * FROM pipeline_runs "
+            "ORDER BY COALESCE(NULLIF(TRIM(run_key), ''), substr(run_date, 1, 10)) DESC, "
+            "run_date DESC, id DESC LIMIT 50",
+            conn,
+        )
     finally:
         conn.close()
-    return rows.iloc[0].to_dict() if not rows.empty else {}
+    return rows.to_dict("records") if not rows.empty else []
 
 
 st.markdown(
@@ -60,11 +65,16 @@ st.markdown(
 
 if st.button("Làm mới dữ liệu"):
     load_data.clear()
-    load_latest_run.clear()
+    load_pipeline_runs.clear()
 df = load_data()
-from src.dashboard.run_status import render_run_status
+from src.dashboard.run_status import latest_execution, latest_publication, render_run_status
 try:
-    render_run_status(load_latest_run(), pd.to_datetime(df["signal_date"]).max() if not df.empty else None)
+    pipeline_runs = load_pipeline_runs()
+    render_run_status(
+        latest_publication(pipeline_runs),
+        pd.to_datetime(df["signal_date"]).max() if not df.empty else None,
+        latest_execution_run=latest_execution(pipeline_runs),
+    )
 except Exception:
     log.exception("Cannot load latest pipeline status")
     st.warning("Chưa tải được trạng thái pipeline. Thử làm mới dữ liệu.")
