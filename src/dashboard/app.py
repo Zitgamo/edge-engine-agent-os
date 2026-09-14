@@ -28,6 +28,11 @@ st.set_page_config(
 
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
+with st.container(border=True):
+    st.markdown("**Mới · Đánh giá chiến thuật 14/09/2026**")
+    st.caption("Đã thử chiến thuật Việt Nam và ETF Mỹ; các ứng viên chưa đạt để thay live.")
+    st.page_link("pages/4_ĐánhGiá.py", label="Xem kết quả và hướng tiếp theo", icon="📊")
+
 
 @st.cache_data(ttl=120, max_entries=4)
 def load_overview():
