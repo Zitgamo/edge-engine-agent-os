@@ -1,12 +1,12 @@
 {
   "last_decision": {
-    "created_at": "2026-09-14T06:24:22.113666+00:00",
-    "decision": "quality_gate_failed",
+    "created_at": "2026-09-14T15:57:44.401274+00:00",
+    "decision": "rejected_material_regression",
     "horizon": 20,
     "model_family": "xgboost_technical_v7_execution_max_sl05_tp10",
-    "model_version": "xgboost_technical_v7_execution_max_sl05_tp10_h20_2026-09-11",
-    "reason": "T+20 model quality gate failed: execution top-3 excess return=-0.03% < minimum 0.00%.",
-    "run_key": "2026-09-11",
+    "model_version": "xgboost_technical_v7_execution_max_sl05_tp10_h20_2026-09-14",
+    "reason": "Candidate regressed beyond 0.20% tolerance: execution_top3_excess_return delta=-0.53%, execution_top3_spread delta=-0.54%",
+    "run_key": "2026-09-14",
     "status": "rejected"
   },
   "records": [
@@ -479,8 +479,84 @@
       "run_key": "2026-09-11",
       "status": "rejected",
       "trained_until": "2026-09-11"
+    },
+    {
+      "champion_metrics": {
+        "accuracy": 0.562306101344364,
+        "evaluation_dates": 40.0,
+        "execution_evaluation_dates": 40.0,
+        "execution_top3_excess_return": 0.0061350812933308515,
+        "execution_top3_spread": 0.009884566945384496,
+        "execution_top3_win_rate": 0.5666666666666667,
+        "execution_universe_excess_return": -0.003749485652053643,
+        "f1": 0.230804179918219,
+        "majority_baseline_accuracy": 0.5972078593588418,
+        "positive_rate": 0.4027921406411582,
+        "precision": 0.39502332814930013,
+        "recall": 0.16302952503209242,
+        "roc_auc": 0.5204958071453579,
+        "top3_excess_return": 0.0061350812933308515,
+        "top3_spread": 0.009884566945384496,
+        "top3_win_rate": 0.5666666666666667,
+        "universe_excess_return": -0.003749485652053643
+      },
+      "champion_model_version": "xgboost_technical_v7_execution_max_sl05_tp10_h20_2026-09-10",
+      "created_at": "2026-09-14T15:57:44.401274+00:00",
+      "decision": "rejected_material_regression",
+      "deltas_vs_champion": {
+        "execution_top3_excess_return": -0.005286883389271642,
+        "execution_top3_spread": -0.005382858159766202
+      },
+      "horizon": 20,
+      "live_validation": {
+        "avg_excess_return": null,
+        "basket_count": 0,
+        "baskets_to_minimum": 10,
+        "health_status": "pending",
+        "latest_signal_date": null,
+        "min_avg_excess_return": 0.0,
+        "min_baskets": 10,
+        "min_trades": 30,
+        "min_win_rate": 0.45,
+        "model_family": "xgboost_technical_v7_execution_max_sl05_tp10",
+        "model_versions": [],
+        "ready": false,
+        "reason": "No realized rows belong to the current model family yet.",
+        "status": "collecting",
+        "trade_count": 0,
+        "trades_to_minimum": 30,
+        "win_rate": null
+      },
+      "max_regression": 0.002,
+      "metrics": {
+        "accuracy": 0.5873836608066184,
+        "evaluation_dates": 40.0,
+        "execution_evaluation_dates": 40.0,
+        "execution_top3_excess_return": 0.00084819790405921,
+        "execution_top3_spread": 0.004501708785618294,
+        "execution_top3_win_rate": 0.5416666666666666,
+        "execution_universe_excess_return": -0.0036535108815590827,
+        "f1": 0.23563218390804597,
+        "majority_baseline_accuracy": 0.5995346432264737,
+        "positive_rate": 0.40046535677352635,
+        "precision": 0.45640074211502785,
+        "recall": 0.15881213686249193,
+        "roc_auc": 0.5463314116328163,
+        "top3_excess_return": 0.00084819790405921,
+        "top3_spread": 0.004501708785618294,
+        "top3_win_rate": 0.5416666666666666,
+        "universe_excess_return": -0.0036535108815590827
+      },
+      "min_quality_dates": 30,
+      "model_family": "xgboost_technical_v7_execution_max_sl05_tp10",
+      "model_version": "xgboost_technical_v7_execution_max_sl05_tp10_h20_2026-09-14",
+      "quality_passed": true,
+      "reason": "Candidate regressed beyond 0.20% tolerance: execution_top3_excess_return delta=-0.53%, execution_top3_spread delta=-0.54%",
+      "run_key": "2026-09-14",
+      "status": "rejected",
+      "trained_until": "2026-09-14"
     }
   ],
   "schema_version": 1,
-  "updated_at": "2026-09-14T06:24:22.113666+00:00"
+  "updated_at": "2026-09-14T15:57:44.401274+00:00"
 }
