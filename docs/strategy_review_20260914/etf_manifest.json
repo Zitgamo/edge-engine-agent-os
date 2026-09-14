@@ -1,0 +1,26 @@
+{
+  "source": "Yahoo Finance via yfinance 1.5.2; auto_adjust=True",
+  "retrieved": "2026-09-14",
+  "latest_bar": "2026-09-11",
+  "sha256": "b3d47d5a137e348e2eb746fb2cc356437476da386184e9ca7699c0ce12e120f3",
+  "parameters": {
+    "momentum_sessions": 126,
+    "sma_sessions": 200,
+    "rebalance_sessions": 20
+  },
+  "status": "research_only_not_promoted",
+  "checks": [
+    "historical target causality",
+    "warmup cash",
+    "higher cost reduces final equity",
+    "complete positive bars"
+  ],
+  "limitations": [
+    "One data vendor, adjusted prices are approximations to total returns",
+    "No taxes, FX, account restrictions or cash interest",
+    "No terminal liquidation cost; open positions marked to market",
+    "Period returns include positions carried across boundaries",
+    "No fresh forward evidence; universe chosen retrospectively",
+    "20-session cadence is not a promise of daily entry signals"
+  ]
+}

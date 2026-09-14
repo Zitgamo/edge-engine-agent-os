@@ -1,0 +1,15 @@
+{
+  "features_sha256": "6a350c3ddf9934dd049ab61d2844ccfe25d384d14a118582ad14e22be2938a9a",
+  "outcomes_sha256": "c149deb8006726ef7d5290fed3ce2dbf649ad6aab2dc2b744db2b8ceecb0c034",
+  "feature_end": "2026-08-27 00:00:00",
+  "cost": 0.003,
+  "exit": "ATR2 / TP10 / T20",
+  "limitations": [
+    "Previously seen data; not a fresh holdout",
+    "Static VN30 membership, not point-in-time constituents",
+    "Overlapping daily baskets are correlated, not independent samples",
+    "Cached execution model does not establish liquidity or actual fills",
+    "Signal frequency counts complete-feature sessions, not an exchange calendar",
+    "No capital portfolio simulation or automatic promotion"
+  ]
+}
