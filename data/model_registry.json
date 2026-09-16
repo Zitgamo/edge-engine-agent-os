@@ -1,11 +1,11 @@
 {
   "last_decision": {
-    "created_at": "2026-09-15T14:29:23.044561+00:00",
+    "created_at": "2026-09-16T06:07:27.376534+00:00",
     "decision": "rejected_material_regression",
     "horizon": 20,
     "model_family": "xgboost_technical_v7_execution_max_sl05_tp10",
     "model_version": "xgboost_technical_v7_execution_max_sl05_tp10_h20_2026-09-15",
-    "reason": "Candidate regressed beyond 0.20% tolerance: execution_top3_excess_return delta=-0.28%, execution_top3_spread delta=-0.22%",
+    "reason": "Candidate regressed beyond 0.20% tolerance: execution_top3_excess_return delta=-0.31%, execution_top3_spread delta=-0.25%",
     "run_key": "2026-09-15",
     "status": "rejected"
   },
@@ -577,11 +577,11 @@
         "universe_excess_return": -0.003749485652053643
       },
       "champion_model_version": "xgboost_technical_v7_execution_max_sl05_tp10_h20_2026-09-10",
-      "created_at": "2026-09-15T14:29:23.044561+00:00",
+      "created_at": "2026-09-16T06:07:27.376534+00:00",
       "decision": "rejected_material_regression",
       "deltas_vs_champion": {
-        "execution_top3_excess_return": -0.0027678470755907467,
-        "execution_top3_spread": -0.0021836758660080885
+        "execution_top3_excess_return": -0.0030512477534217685,
+        "execution_top3_spread": -0.0024670765438391095
       },
       "horizon": 20,
       "live_validation": {
@@ -605,34 +605,34 @@
       },
       "max_regression": 0.002,
       "metrics": {
-        "accuracy": 0.5767838676318511,
+        "accuracy": 0.577300930713547,
         "evaluation_dates": 40.0,
         "execution_evaluation_dates": 40.0,
-        "execution_top3_excess_return": 0.003367234217740105,
-        "execution_top3_spread": 0.007700891079376407,
-        "execution_top3_win_rate": 0.5333333333333333,
+        "execution_top3_excess_return": 0.003083833539909083,
+        "execution_top3_spread": 0.007417490401545386,
+        "execution_top3_win_rate": 0.5666666666666667,
         "execution_universe_excess_return": -0.004333656861636303,
-        "f1": 0.25353397172822617,
+        "f1": 0.2571558382553385,
         "majority_baseline_accuracy": 0.6026370217166495,
         "positive_rate": 0.39736297828335054,
-        "precision": 0.42378048780487804,
-        "recall": 0.180871828236825,
-        "roc_auc": 0.5349170622430219,
-        "top3_excess_return": 0.003367234217740105,
-        "top3_spread": 0.007700891079376407,
-        "top3_win_rate": 0.5333333333333333,
+        "precision": 0.42620481927710846,
+        "recall": 0.1841249186727391,
+        "roc_auc": 0.5361628940028419,
+        "top3_excess_return": 0.003083833539909083,
+        "top3_spread": 0.007417490401545386,
+        "top3_win_rate": 0.5666666666666667,
         "universe_excess_return": -0.004333656861636303
       },
       "min_quality_dates": 30,
       "model_family": "xgboost_technical_v7_execution_max_sl05_tp10",
       "model_version": "xgboost_technical_v7_execution_max_sl05_tp10_h20_2026-09-15",
       "quality_passed": true,
-      "reason": "Candidate regressed beyond 0.20% tolerance: execution_top3_excess_return delta=-0.28%, execution_top3_spread delta=-0.22%",
+      "reason": "Candidate regressed beyond 0.20% tolerance: execution_top3_excess_return delta=-0.31%, execution_top3_spread delta=-0.25%",
       "run_key": "2026-09-15",
       "status": "rejected",
       "trained_until": "2026-09-15"
     }
   ],
   "schema_version": 1,
-  "updated_at": "2026-09-15T14:29:23.044561+00:00"
+  "updated_at": "2026-09-16T06:07:27.376534+00:00"
 }
