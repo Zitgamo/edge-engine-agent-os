@@ -1,13 +1,13 @@
 {
   "last_decision": {
-    "created_at": "2026-09-18T06:00:38.909905+00:00",
-    "decision": "rejected_material_regression",
+    "created_at": "2026-09-18T13:40:39.657846+00:00",
+    "decision": "promoted_no_material_regression",
     "horizon": 20,
     "model_family": "xgboost_technical_v7_execution_max_sl05_tp10",
-    "model_version": "xgboost_technical_v7_execution_max_sl05_tp10_h20_2026-09-17",
-    "reason": "Candidate regressed beyond 0.20% tolerance: execution_top3_excess_return delta=-0.21%",
-    "run_key": "2026-09-17",
-    "status": "rejected"
+    "model_version": "xgboost_technical_v7_execution_max_sl05_tp10_h20_2026-09-18",
+    "reason": "Candidate passed the execution quality gate and stayed within 0.20% of the current champion.",
+    "run_key": "2026-09-18",
+    "status": "champion"
   },
   "records": [
     {
@@ -403,8 +403,9 @@
       "model_version": "xgboost_technical_v7_execution_max_sl05_tp10_h20_2026-09-10",
       "quality_passed": true,
       "reason": "Candidate passed the execution quality gate and stayed within 0.20% of the current champion.",
+      "retired_at": "2026-09-18T13:40:39.657846+00:00",
       "run_key": "2026-09-10",
-      "status": "champion",
+      "status": "retired",
       "trained_until": "2026-09-10"
     },
     {
@@ -783,8 +784,90 @@
       "run_key": "2026-09-17",
       "status": "rejected",
       "trained_until": "2026-09-17"
+    },
+    {
+      "artifact": {
+        "archive_sha256": "fb2259ec814cd5fd89a53147efd166396b3244c69b4b4712dfba887a98b9d676",
+        "archive_size_bytes": 780852,
+        "model_count": 4,
+        "model_version": "xgboost_technical_v7_execution_max_sl05_tp10_h20_2026-09-18"
+      },
+      "champion_metrics": {
+        "accuracy": 0.562306101344364,
+        "evaluation_dates": 40.0,
+        "execution_evaluation_dates": 40.0,
+        "execution_top3_excess_return": 0.0061350812933308515,
+        "execution_top3_spread": 0.009884566945384496,
+        "execution_top3_win_rate": 0.5666666666666667,
+        "execution_universe_excess_return": -0.003749485652053643,
+        "f1": 0.230804179918219,
+        "majority_baseline_accuracy": 0.5972078593588418,
+        "positive_rate": 0.4027921406411582,
+        "precision": 0.39502332814930013,
+        "recall": 0.16302952503209242,
+        "roc_auc": 0.5204958071453579,
+        "top3_excess_return": 0.0061350812933308515,
+        "top3_spread": 0.009884566945384496,
+        "top3_win_rate": 0.5666666666666667,
+        "universe_excess_return": -0.003749485652053643
+      },
+      "champion_model_version": "xgboost_technical_v7_execution_max_sl05_tp10_h20_2026-09-10",
+      "created_at": "2026-09-18T13:40:39.657846+00:00",
+      "decision": "promoted_no_material_regression",
+      "deltas_vs_champion": {
+        "execution_top3_excess_return": -0.001082394043972275,
+        "execution_top3_spread": 0.0021027249869014254
+      },
+      "horizon": 20,
+      "live_validation": {
+        "avg_excess_return": null,
+        "basket_count": 0,
+        "baskets_to_minimum": 10,
+        "health_status": "pending",
+        "latest_signal_date": null,
+        "min_avg_excess_return": 0.0,
+        "min_baskets": 10,
+        "min_trades": 30,
+        "min_win_rate": 0.45,
+        "model_family": "xgboost_technical_v7_execution_max_sl05_tp10",
+        "model_versions": [],
+        "ready": false,
+        "reason": "No realized rows belong to the current model family yet.",
+        "status": "collecting",
+        "trade_count": 0,
+        "trades_to_minimum": 30,
+        "win_rate": null
+      },
+      "max_regression": 0.002,
+      "metrics": {
+        "accuracy": 0.5909090909090909,
+        "evaluation_dates": 40.0,
+        "execution_evaluation_dates": 40.0,
+        "execution_top3_excess_return": 0.0050526872493585765,
+        "execution_top3_spread": 0.011987291932285921,
+        "execution_top3_win_rate": 0.5666666666666667,
+        "execution_universe_excess_return": -0.006934604682927345,
+        "f1": 0.24928092042186,
+        "majority_baseline_accuracy": 0.6246081504702194,
+        "positive_rate": 0.37539184952978055,
+        "precision": 0.40061633281972264,
+        "recall": 0.18093249826026445,
+        "roc_auc": 0.5115122325747766,
+        "top3_excess_return": 0.0050526872493585765,
+        "top3_spread": 0.011987291932285921,
+        "top3_win_rate": 0.5666666666666667,
+        "universe_excess_return": -0.006934604682927345
+      },
+      "min_quality_dates": 30,
+      "model_family": "xgboost_technical_v7_execution_max_sl05_tp10",
+      "model_version": "xgboost_technical_v7_execution_max_sl05_tp10_h20_2026-09-18",
+      "quality_passed": true,
+      "reason": "Candidate passed the execution quality gate and stayed within 0.20% of the current champion.",
+      "run_key": "2026-09-18",
+      "status": "champion",
+      "trained_until": "2026-09-18"
     }
   ],
   "schema_version": 1,
-  "updated_at": "2026-09-18T06:00:38.909905+00:00"
+  "updated_at": "2026-09-18T13:40:39.657846+00:00"
 }
