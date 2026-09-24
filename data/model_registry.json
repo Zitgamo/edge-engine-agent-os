@@ -1,11 +1,11 @@
 {
   "last_decision": {
-    "created_at": "2026-09-23T14:17:50.129806+00:00",
-    "decision": "rejected_material_regression",
+    "created_at": "2026-09-24T06:15:07.129047+00:00",
+    "decision": "quality_gate_failed",
     "horizon": 20,
     "model_family": "xgboost_technical_v7_execution_max_sl05_tp10",
     "model_version": "xgboost_technical_v7_execution_max_sl05_tp10_h20_2026-09-23",
-    "reason": "Candidate regressed beyond 0.20% tolerance: execution_top3_excess_return delta=-0.36%, execution_top3_spread delta=-0.27%",
+    "reason": "T+20 model quality gate failed: execution top-3 excess return=-0.02% < minimum 0.00%.",
     "run_key": "2026-09-23",
     "status": "rejected"
   },
@@ -1040,12 +1040,9 @@
         "universe_excess_return": -0.006934604761154725
       },
       "champion_model_version": "xgboost_technical_v7_execution_max_sl05_tp10_h20_2026-09-18",
-      "created_at": "2026-09-23T14:17:50.129806+00:00",
-      "decision": "rejected_material_regression",
-      "deltas_vs_champion": {
-        "execution_top3_excess_return": -0.00359866317757866,
-        "execution_top3_spread": -0.002680919751634727
-      },
+      "created_at": "2026-09-24T06:15:07.129047+00:00",
+      "decision": "quality_gate_failed",
+      "deltas_vs_champion": {},
       "horizon": 20,
       "live_validation": {
         "avg_excess_return": null,
@@ -1068,34 +1065,34 @@
       },
       "max_regression": 0.002,
       "metrics": {
-        "accuracy": 0.6041884816753926,
+        "accuracy": 0.5968586387434555,
         "evaluation_dates": 40.0,
         "execution_evaluation_dates": 40.0,
-        "execution_top3_excess_return": 0.0026847251290557533,
-        "execution_top3_spread": 0.010537073316154411,
-        "execution_top3_win_rate": 0.5166666666666666,
-        "execution_universe_excess_return": -0.007852348187098658,
-        "f1": 0.24626121635094717,
+        "execution_top3_excess_return": -0.00020275452655087943,
+        "execution_top3_spread": 0.007645771943796782,
+        "execution_top3_win_rate": 0.4666666666666666,
+        "execution_universe_excess_return": -0.007848526470347662,
+        "f1": 0.23837784371909002,
         "majority_baseline_accuracy": 0.6397905759162303,
         "positive_rate": 0.36020942408376966,
-        "precision": 0.39206349206349206,
-        "recall": 0.17950581395348839,
-        "roc_auc": 0.503508384320405,
-        "top3_excess_return": 0.0026847251290557533,
-        "top3_spread": 0.010537073316154411,
-        "top3_win_rate": 0.5166666666666666,
-        "universe_excess_return": -0.007852348187098658
+        "precision": 0.37306501547987614,
+        "recall": 0.1751453488372093,
+        "roc_auc": 0.505887549718342,
+        "top3_excess_return": -0.00020275452655087943,
+        "top3_spread": 0.007645771943796782,
+        "top3_win_rate": 0.4666666666666666,
+        "universe_excess_return": -0.007848526470347662
       },
       "min_quality_dates": 30,
       "model_family": "xgboost_technical_v7_execution_max_sl05_tp10",
       "model_version": "xgboost_technical_v7_execution_max_sl05_tp10_h20_2026-09-23",
-      "quality_passed": true,
-      "reason": "Candidate regressed beyond 0.20% tolerance: execution_top3_excess_return delta=-0.36%, execution_top3_spread delta=-0.27%",
+      "quality_passed": false,
+      "reason": "T+20 model quality gate failed: execution top-3 excess return=-0.02% < minimum 0.00%.",
       "run_key": "2026-09-23",
       "status": "rejected",
       "trained_until": "2026-09-23"
     }
   ],
   "schema_version": 1,
-  "updated_at": "2026-09-23T14:17:50.129806+00:00"
+  "updated_at": "2026-09-24T06:15:07.129047+00:00"
 }
